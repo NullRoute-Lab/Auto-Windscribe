@@ -15,6 +15,7 @@ from rich.table import Table
 from . import __version__
 from .demo import demo_services
 from .errors import AppError
+from .health import NetworkHealthChecker, public_report
 from .models import Candidate, Profile
 from .ranking import make_queue, matches, rank_results
 from .service import Services, build_services
@@ -55,6 +56,8 @@ def parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("status", "Read connection status without exposing IP addresses"),
         ("protocols", "Discover supported protocols and ports"),
+        ("network-check", "Bounded network probes; confirmation required"),
+        ("recovery-status", "Read the last saved recovery report"),
         ("doctor", "Read-only diagnostics; never runs connectivity probes"),
     ):
         sub.add_parser(name, parents=[common], help=help_text)
@@ -64,6 +67,9 @@ def parser() -> argparse.ArgumentParser:
     locations.add_argument("--cities", action="store_true")
     locations.add_argument("--tier", choices=["all", "free", "pro", "unknown"], default="all")
     scan = sub.add_parser("scan", parents=[common], help="Plan or run a bounded sequential scan")
+    scan.add_argument("--auto-recover", action=argparse.BooleanOptionalAction, default=None)
+    scan.add_argument("--max-recoveries", type=int)
+    scan.add_argument("--recovery-delay", type=float)
     scan.add_argument("--profile", default=None)
     scan.add_argument("--max-tests", type=int)
     scan.add_argument("--mode", choices=["first-success", "rank", "fast"])
@@ -133,6 +139,9 @@ def scan_profile(args: argparse.Namespace, services: Services) -> Profile:
     changes = {
         field: getattr(args, arg)
         for arg, field in (
+            ("auto_recover", "auto_recover"),
+            ("max_recoveries", "max_recoveries"),
+            ("recovery_delay", "recovery_delay"),
             ("max_tests", "max_tests"),
             ("preflight_concurrency", "preflight_concurrency"),
             ("preflight_budget", "preflight_budget"),
@@ -204,6 +213,17 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
         )
         if catalog.stale and not machine:
             console.print("Cached catalog is outdated or refresh failed.")
+    elif cmd == "recovery-status":
+        output(services.store.recovery_status(), machine)
+    elif cmd == "network-check":
+        if dry or services.offline:
+            output(NetworkHealthChecker.plan(services.profile()), machine)
+        else:
+            confirm_session(args, services, "Run bounded Google ping, DNS and HTTPS health checks?")
+            assert services.controller.health is not None
+            output(
+                public_report(await services.controller.health.check(services.profile())), machine
+            )
     elif cmd == "doctor":
         status = await services.vpn.status()
         checks: dict[str, Any] = {
@@ -213,6 +233,8 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
             "preflight": "unavailable: native CLI does not expose trusted endpoint mapping",
             "status": asdict(status),
             "firewall_policy": "preserved",
+            "gui_dialog": "Manual-mode failure prompts cannot be suppressed by this controller",
+            "recovery_cycles": "Unavailable: no GUI preference restore or exclusive IPC lease",
             "advanced_settings": "Not exposed by CLI; see docs/CAPABILITIES.md",
         }
         if isinstance(services.vpn, WindscribeCLI):
@@ -361,6 +383,7 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
                     f"Start {profile.strategy}: up to {profile.max_tests} VPN attempts, "
                     f"{profile.preflight_budget} transport probes, "
                     f"{profile.session_budget:g}s session? "
+                    "Includes baseline probes and bounded recovery of scan-owned tunnels. "
                     "Internet may be interrupted; existing tunnel is protected.",
                 )
                 if scan_id is None:
@@ -407,7 +430,15 @@ def main(argv: list[str] | None = None) -> int:
                     offline=getattr(args, "offline", False) or getattr(args, "dry_run", False),
                     confirmed=getattr(args, "live", False),
                     readonly=args.command
-                    in ("status", "doctor", "locations", "protocols", "results")
+                    in (
+                        "status",
+                        "doctor",
+                        "locations",
+                        "protocols",
+                        "results",
+                        "recovery-status",
+                        "network-check",
+                    )
                     or (args.command == "profiles" and args.action in ("list", "show")),
                 )
             )

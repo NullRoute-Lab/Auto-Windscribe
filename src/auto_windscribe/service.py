@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from .engine import Controller
 from .errors import AppError
+from .health import NetworkHealthChecker
 from .models import Candidate, Location, Profile, Status
 from .preflight import NativeInventory, Preflight, TCPTransport
 from .probes import TunnelProbe
@@ -72,6 +73,7 @@ def build_services(
         store,
         OperationLock(paths.data / "operation.lock"),
         gate,
+        health=NetworkHealthChecker(runner, vpn, gate),
         preflight=Preflight(NativeInventory(), TCPTransport(gate), gate),
     )
     return Services(

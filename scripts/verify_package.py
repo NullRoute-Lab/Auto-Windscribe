@@ -4,7 +4,7 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-for archive in Path("dist").glob("auto_windscribe-0.2.0*"):
+for archive in Path("dist").glob("auto_windscribe-0.3.0*"):
     if archive.suffix == ".whl":
         with zipfile.ZipFile(archive) as wheel:
             names = wheel.namelist()
@@ -29,5 +29,5 @@ for archive in Path("dist").glob("auto_windscribe-0.2.0*"):
         )
         assert not name.endswith((".key", ".pem", ".ovpn", ".env", ".log"))
     print(f"Audited {archive.name}: {len(names)} files")
-assert list(Path("dist").glob("auto_windscribe-0.2.0*.whl"))
-assert list(Path("dist").glob("auto_windscribe-0.2.0*.tar.gz"))
+assert list(Path("dist").glob("auto_windscribe-0.3.0*.whl"))
+assert list(Path("dist").glob("auto_windscribe-0.3.0*.tar.gz"))

@@ -1,4 +1,4 @@
-# Auto-Windscribe 0.2
+# Auto-Windscribe 0.3
 
 A terminal VPN manager and adaptive connection analyzer for **Linux Bluefin** using the existing
 `/usr/bin/windscribe-cli`. This is an unofficial controller, not a VPN client or a Windscribe product.
@@ -176,3 +176,27 @@ Local-wheel installs should first switch to the Git source as described in [INST
 Uninstall retains application history and never removes Windscribe. Database schema v2 migrates v1;
 back up application data before downgrading. No public endpoint IPs, personal logs or runtime data
 are committed. MIT license; original implementation with [reference acknowledgments](THIRD_PARTY_NOTICES.md).
+
+## v0.3 network recovery
+
+Baseline DNS, Google ping, Google HTTPS and independent HTTPS are checked before each native
+attempt. ICMP-only failure does not stop a usable baseline. Recovery observes native state,
+gracefully disconnects only a scan-owned tunnel when needed, waits and checks baseline again.
+Verified recovery continues the saved queue; unresolved IPC or GUI conflicts pause safely.
+No firewall disabling, host networking edits or speculative connection cycles are supported.
+Native Switch to Auto prompts cannot be suppressed. See [recovery analysis](docs/RECOVERY.md)
+(from the repository root; in docs use RECOVERY.md).
+
+```bash
+auto-windscribe
+auto-windscribe doctor
+auto-windscribe network-check --dry-run
+auto-windscribe network-check                 # asks before real health probes
+auto-windscribe scan --profile turbo --auto-recover --max-recoveries 2
+auto-windscribe recovery-status
+auto-windscribe results --history
+```
+
+Scripts need `--live` for active probes/scans. `doctor` and `recovery-status` are read-only.
+Max recoveries counts health/settling passes, not extra VPN connections. Mandatory baseline
+checks cannot be disabled. Stop/Quit retains VPN state. Real recovery efficacy is not yet verified.

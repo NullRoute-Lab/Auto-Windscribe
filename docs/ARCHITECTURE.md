@@ -147,3 +147,27 @@ help is authoritative and capability discovery is repeated at runtime.
 
 [TURBO.md](TURBO.md) documents endpoint trust, adaptive selection weights, phase errors,
 proxy/namespace research, budgets, schema migration and measured offline performance.
+
+## v0.3 network recovery
+
+Baseline DNS, Google ping, Google HTTPS and independent HTTPS are checked before each native
+attempt. ICMP-only failure does not stop a usable baseline. Recovery observes native state,
+gracefully disconnects only a scan-owned tunnel when needed, waits and checks baseline again.
+Verified recovery continues the saved queue; unresolved IPC or GUI conflicts pause safely.
+No firewall disabling, host networking edits or speculative connection cycles are supported.
+Native Switch to Auto prompts cannot be suppressed. See [recovery analysis](RECOVERY.md)
+(from the repository root; in docs use RECOVERY.md).
+
+```bash
+auto-windscribe
+auto-windscribe doctor
+auto-windscribe network-check --dry-run
+auto-windscribe network-check                 # asks before real health probes
+auto-windscribe scan --profile turbo --auto-recover --max-recoveries 2
+auto-windscribe recovery-status
+auto-windscribe results --history
+```
+
+Scripts need `--live` for active probes/scans. `doctor` and `recovery-status` are read-only.
+Max recoveries counts health/settling passes, not extra VPN connections. Mandatory baseline
+checks cannot be disabled. Stop/Quit retains VPN state. Real recovery efficacy is not yet verified.

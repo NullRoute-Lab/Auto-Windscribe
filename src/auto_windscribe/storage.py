@@ -245,6 +245,8 @@ class Store:
                 scan_id INTEGER NOT NULL REFERENCES scans(id), candidate_key TEXT NOT NULL,
                 payload TEXT NOT NULL, PRIMARY KEY(scan_id, candidate_key)
             );
+            CREATE TABLE IF NOT EXISTS recovery_events (
+                id INTEGER PRIMARY KEY, scan_id INTEGER, created REAL, payload TEXT);
             PRAGMA user_version=2;
         """)
 
@@ -342,3 +344,16 @@ class Store:
                 "SELECT payload FROM preflight WHERE scan_id=?", (scan_id,)
             )
         ]
+
+    def recovery_record(self, scan_id: int, report: Any) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO recovery_events(scan_id,created,payload) VALUES(?,?,?)",
+                (scan_id, time.time(), encode(report)),
+            )
+
+    def recovery_status(self) -> dict:
+        row = self.conn.execute(
+            "SELECT payload FROM recovery_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return json.loads(row[0]) if row else {"phase": "not attempted"}

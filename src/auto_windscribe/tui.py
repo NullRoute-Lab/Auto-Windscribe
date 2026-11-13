@@ -108,6 +108,8 @@ class Preferences(ModalScreen[Profile | None]):
                         ", ".join(p.protocols),
                     ),
                     ("max_tests", "Maximum attempts, including retries", str(p.max_tests)),
+                    ("max_recoveries", "Maximum recovery checks (1–2)", str(p.max_recoveries)),
+                    ("recovery_delay", "Recovery settling delay (seconds)", str(p.recovery_delay)),
                     ("timeout", "Connection timeout in seconds", str(p.timeout)),
                     ("retries", "Retries per failed candidate (0–2)", str(p.retries)),
                     ("session_budget", "Session time budget (seconds)", str(p.session_budget)),
@@ -139,6 +141,10 @@ class Preferences(ModalScreen[Profile | None]):
                     yield Input(
                         ", ".join(map(str, p.ports.get(proto, []))), id=f"pref-ports-{proto}"
                     )
+                yield Label(
+                    "Automatic recovery: observe, settle, check baseline; no connection cycles"
+                )
+                yield Switch(p.auto_recover, id="pref-recovery")
                 yield Label(_("Mode"))
                 yield Select(
                     [(v, v) for v in ("first-success", "rank", "fast")],
@@ -203,6 +209,9 @@ class Preferences(ModalScreen[Profile | None]):
                 max_tests=int(value("max_tests")),
                 timeout=float(value("timeout")),
                 retries=int(value("retries")),
+                auto_recover=self.query_one("#pref-recovery", Switch).value,
+                max_recoveries=int(value("max_recoveries")),
+                recovery_delay=float(value("recovery_delay")),
                 session_budget=float(value("session_budget")),
                 preflight_concurrency=int(value("preflight_concurrency")),
                 preflight_budget=int(value("preflight_budget")),
@@ -326,6 +335,7 @@ class WindscribeApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static(_("Loading read-only connection status…"), id="status", markup=False)
+        yield Static("INTERNET: UNKNOWN · RECOVERY: idle", id="network", markup=False)
         yield Static("", id="overview", markup=False)
         with Horizontal(id="toolbar"):
             yield Input(placeholder=_("/ Search country, city or nickname…"), id="search")
@@ -694,7 +704,8 @@ class WindscribeApp(App[None]):
                 f"{self.profile.preflight_budget} "
                 f"transport probes, {self.profile.session_budget:g}s budget? Internet may "
                 f"be interrupted. "
-                "Only start while disconnected. Stop/Quit retain the current VPN state."
+                "Includes baseline health probes and recovery of scan-owned tunnels. "
+                "Native GUI prompts cannot be suppressed. Stop/Quit retain VPN state."
             ),
             lambda yes: self.start_scan(queue) if yes else None,
         )
@@ -777,6 +788,14 @@ class WindscribeApp(App[None]):
             self.refresh_status()
 
     def progress_event(self, event: Progress) -> None:
+        if event.phase in (
+            "PRECHECK",
+            "RECOVERY",
+            "BASELINE_HEALTHY",
+            "RECOVERY_FAILED",
+            "RECOVERY_PENDING",
+        ):
+            self.query_one("#network", Static).update(f"{event.phase}: {event.message}")
         self.message(f"{event.phase}: {event.message}")
         if event.result:
             self.query_one("#log", RichLog).write(

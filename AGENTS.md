@@ -2,7 +2,7 @@
 
 ## Current development authorization
 
-The v0.2 Turbo Discovery implementation is authorized. The earlier permission
+The v0.3 Turbo Discovery implementation is authorized. The earlier permission
 covered one live connection test and is consumed. During this development session,
 **do not execute VPN connect/disconnect, DNS endpoint resolution, TCP/TLS endpoint
 probes, ping, HTTPS connectivity checks, benchmarks over real networks, or scans**.
@@ -43,3 +43,5 @@ of Git. Public benchmark documentation may contain only measured synthetic test
 results with methodology. Complete offline lint/types/tests/build and GitHub
 Actions, update the local executable, commit/push, verify remote, then stop and
 ask for new permission for a small bounded Turbo test. See docs/TEST_AUTHORIZATION.md.
+
+This session forbids real Google/DNS/HTTPS health checks and recovery cycles. Use fake adapters only.

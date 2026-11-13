@@ -12,7 +12,13 @@
   "preflight_retries": 1,
   "preflight_deadline": 30,
   "name": "my-network",
-  "protocols": ["stealth", "wstunnel", "tcp", "wireguard", "udp"],
+  "protocols": [
+    "stealth",
+    "wstunnel",
+    "tcp",
+    "wireguard",
+    "udp"
+  ],
   "ports": {},
   "countries": [],
   "cities": [],
@@ -28,5 +34,10 @@
   "ping_count": 4,
   "download": false,
   "network_label": "network-one",
-  "settings_label": "gui-unchanged"
+  "settings_label": "gui-unchanged",
+  "auto_recover": true,
+  "max_recoveries": 2,
+  "recovery_delay": 2,
+  "recovery_timeout": 25,
+  "health_endpoint": "https://1.1.1.1/cdn-cgi/trace"
 }

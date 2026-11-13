@@ -170,6 +170,11 @@ class Profile:
     download: bool = False
     network_label: str = "default"
     settings_label: str = "gui-unchanged"
+    auto_recover: bool = True
+    max_recoveries: int = 2
+    recovery_delay: float = 2.0
+    recovery_timeout: float = 25.0
+    health_endpoint: str = "https://1.1.1.1/cdn-cgi/trace"
     strategy: str = "turbo"
     dispatch_timeout: float = 10.0
     status_timeout: float = 10.0
@@ -210,7 +215,15 @@ class Profile:
                 for v in values
             ):
                 raise ValueError(f"{key} must be a list of short names")
+        from .health import validate_endpoint
+
+        validate_endpoint(self.health_endpoint)
+        if type(self.auto_recover) is not bool:
+            raise ValueError("auto_recover must be boolean")
         bounds = {
+            "max_recoveries": (1, 2),
+            "recovery_delay": (0.1, 15),
+            "recovery_timeout": (1, 120),
             "dispatch_timeout": (1, 60),
             "status_timeout": (1, 30),
             "validation_timeout": (1, 30),
@@ -236,6 +249,7 @@ class Profile:
                 raise ValueError(f"{key} must be between {low} and {high}")
         for key in (
             "max_tests",
+            "max_recoveries",
             "retries",
             "ping_count",
             "preflight_concurrency",

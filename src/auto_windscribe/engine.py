@@ -7,10 +7,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .errors import AppError, SafetyError
+from .health import NetworkHealthChecker
 from .models import Candidate, Metrics, Outcome, Profile, Result, State, Status
 from .preflight import Evidence, Preflight
 from .probes import Probe
 from .ranking import adaptive_order, rank_results
+from .recovery import GUICompatibility, NetworkRecoveryManager
 from .safety import OperationLock, SafetyGate
 from .storage import Catalog, Store
 from .windscribe import VPN
@@ -53,11 +55,14 @@ class Controller:
         gate: SafetyGate,
         poll_interval: float = 0.5,
         preflight: Preflight | None = None,
+        health: NetworkHealthChecker | None = None,
     ) -> None:
         self.vpn, self.probe, self.store = vpn, probe, store
         self.lock, self.gate = lock, gate
         self.poll_interval = poll_interval
         self.preflight = preflight
+        self.health = health
+        self.recovery = NetworkRecoveryManager(vpn, health, self._disconnect) if health else None
         self.evidence: dict[str, Evidence] = {}
         self.candidate_states: dict[str, str] = {}
         self.task: asyncio.Task | None = None
@@ -146,6 +151,11 @@ class Controller:
 
     async def _attempt(self, candidate: Candidate, profile: Profile) -> Result:
         await self._disconnected()
+        if self.health:
+            report = await self.health.check(profile)
+            self.emit(Progress("PRECHECK", message=f"INTERNET: {report.state}"))
+            if not report.safe:
+                raise SafetyError("baseline_unhealthy", "Baseline is not safe for a VPN attempt.")
         self.owned = None
         self.candidate_states[candidate.key] = "VPN connecting"
         self.emit(Progress("VPN connecting", message=candidate.key))
@@ -417,11 +427,33 @@ class Controller:
                         and retry < profile.retries
                         and attempts < profile.max_tests
                     )
+                    recovered = False
+                    if result.outcome != Outcome.SUCCESS and self.recovery:
+                        self.emit(Progress("RECOVERY", message=GUICompatibility.warning))
+                        if profile.auto_recover:
+                            unresolved = result.code in ("dispatch_timeout", "ipc_timeout") or (
+                                result.outcome == Outcome.UNKNOWN
+                                and "connecting" not in result.observations
+                                and self.owned is None
+                            )
+                            recovery = await self.recovery.recover(
+                                profile,
+                                candidate,
+                                owned=self.owned == candidate,
+                                unresolved=unresolved,
+                            )
+                            recovered = recovery.safe
+                            self.store.recovery_record(scan_id, recovery)
+                            self.emit(Progress(recovery.phase, message=recovery.reason))
+                            if recovered:
+                                self.owned = None
+                        if not recovered:
+                            again = False
                     self.store.record(
                         result,
                         scan_id,
                         position,
-                        complete=not again and result.outcome != Outcome.UNKNOWN,
+                        complete=not again and (result.outcome != Outcome.UNKNOWN or recovered),
                     )
                     active = None
                     eta = (
@@ -446,7 +478,9 @@ class Controller:
                             eta_s=eta,
                         )
                     )
-                    if result.outcome == Outcome.UNKNOWN:
+                    if (result.outcome != Outcome.SUCCESS and self.recovery and not recovered) or (
+                        result.outcome == Outcome.UNKNOWN and not recovered
+                    ):
                         self.store.set_state(scan_id, "paused")
                         return
                     if result.outcome == Outcome.SUCCESS and profile.mode != "rank":

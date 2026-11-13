@@ -32,3 +32,12 @@ Known limits: no trustworthy native endpoint export for TCP preflight; no succes
 certified; native status can expose only city-level identity; GUI-only advanced preferences remain
 unobservable/unchanged; IPv6/DNS-leak certification and parallel proxy/namespace tunnels are outside
 this release. No host packages, routes, DNS, firewall, GUI preferences or helper services changed.
+
+## v0.3 update
+
+Offline regression suite expanded to 170 tests, including baseline health classification,
+Google command argv, output redaction, cancellation, owned-tunnel disconnect, two failed recovery
+passes, delayed unowned connections, GUI identity mismatch and automatic safe continuation.
+All 142 v0.2 tests remain present and passing. No real health probe or VPN operation was run.
+Read-only native `help connect` and upstream source were inspected. Real internet-loss root cause
+and recovery effectiveness remain unverified. See RECOVERY.md for established defects and limits.

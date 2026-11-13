@@ -1,6 +1,6 @@
 # Development test authorization
 
-**Current v0.2 session: offline implementation and validation only.**
+**Current v0.3 session: offline implementation and validation only.**
 
 The prior single real connection test was authorized after the v0.1 publication;
 that permission was consumed. It does not authorize Turbo preflight, another
@@ -27,3 +27,5 @@ passing GitHub Actions, report results and ask for new explicit permission for a
 small bounded real-world Turbo Discovery test. The app must meanwhile be ready
 for the user to run directly and confirm a scan. Never interpret earlier consent,
 tool permissions, or publication permission as new testing authorization.
+
+This session forbids real Google/DNS/HTTPS health checks and recovery cycles. Use fake adapters only.
