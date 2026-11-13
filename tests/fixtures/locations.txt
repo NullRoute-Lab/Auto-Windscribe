@@ -1,0 +1,5 @@
+Best Location - Example (10 Gbps)
+Test Region - Test City - Example (10 Gbps)
+Canada West - Test City Two - Example Two (Pro) (10 Gbps)
+US East - Test City Three - Example Three (Disabled)
+Demo North - Demo City - Explicit Free (Free)

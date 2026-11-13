@@ -1,0 +1,6 @@
+Login:       Logged in
+Connection:  Connected to Test City
+Protocol:    Stealth:443
+IP:          203.0.113.9 (VPN)
+Firewall:    Always On
+Internet:    Available

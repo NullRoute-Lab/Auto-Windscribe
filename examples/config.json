@@ -1,0 +1,6 @@
+{
+  "live_enabled": false,
+  "auto_scan": false,
+  "default_profile": "default",
+  "catalog_ttl": 86400
+}

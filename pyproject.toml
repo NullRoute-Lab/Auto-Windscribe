@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "auto-windscribe"
+version = "0.1.0"
+description = "Linux terminal controller and offline-testable analyzer for the official Windscribe client"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{name = "NullRoute Lab"}]
+dependencies = ["textual>=6.0,<9"]
+classifiers = ["Operating System :: POSIX :: Linux", "Environment :: Console", "Programming Language :: Python :: 3"]
+
+[project.urls]
+Repository = "https://github.com/NullRoute-Lab/Auto-Windscribe"
+Issues = "https://github.com/NullRoute-Lab/Auto-Windscribe/issues"
+
+[project.scripts]
+auto-windscribe = "auto_windscribe.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3,<10", "pytest-asyncio>=1,<2", "pytest-cov>=6,<8", "ruff>=0.12,<1", "mypy>=1.15,<2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+markers = ["live: requires a separate explicit live-testing authorization; excluded from ordinary tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+files = ["src/auto_windscribe"]
+
+[tool.coverage.run]
+source = ["auto_windscribe"]
+branch = true
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/docs", "/examples", "/.github", "/README*", "/LICENSE",
+           "/THIRD_PARTY_NOTICES.md", "/AGENTS.md", "/SECURITY.md", "/CONTRIBUTING.md",
+           "/pyproject.toml", "/uv.lock"]

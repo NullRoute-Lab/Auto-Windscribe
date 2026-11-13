@@ -1,0 +1,20 @@
+{
+  "name": "my-network",
+  "protocols": ["stealth", "wstunnel", "tcp", "wireguard", "udp"],
+  "ports": {},
+  "countries": [],
+  "cities": [],
+  "locations": [],
+  "tier": "all",
+  "max_tests": 8,
+  "timeout": 50,
+  "settle": 2,
+  "interval": 2,
+  "retries": 0,
+  "cooldown": 3600,
+  "mode": "first-success",
+  "ping_count": 4,
+  "download": false,
+  "network_label": "network-one",
+  "settings_label": "gui-unchanged"
+}
