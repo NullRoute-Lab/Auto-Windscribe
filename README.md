@@ -1,4 +1,4 @@
-# Auto-Windscribe 0.3
+# Auto-Windscribe 0.4
 
 A terminal VPN manager and adaptive connection analyzer for **Linux Bluefin** using the existing
 `/usr/bin/windscribe-cli`. This is an unofficial controller, not a VPN client or a Windscribe product.
@@ -177,7 +177,7 @@ Uninstall retains application history and never removes Windscribe. Database sch
 back up application data before downgrading. No public endpoint IPs, personal logs or runtime data
 are committed. MIT license; original implementation with [reference acknowledgments](THIRD_PARTY_NOTICES.md).
 
-## v0.3 network recovery
+## Network recovery (v0.4)
 
 Baseline DNS, Google ping, Google HTTPS and independent HTTPS are checked before each native
 attempt. ICMP-only failure does not stop a usable baseline. Recovery observes native state,
@@ -200,3 +200,32 @@ auto-windscribe results --history
 Scripts need `--live` for active probes/scans. `doctor` and `recovery-status` are read-only.
 Max recoveries counts health/settling passes, not extra VPN connections. Mandatory baseline
 checks cannot be disabled. Stop/Quit retains VPN state. Real recovery efficacy is not yet verified.
+
+## Native settlement and complete exhaustive jobs
+
+The previous two-observation cutoff is fixed. Native negotiation now has its own deadline and
+backoff, independent of baseline-check retries. Defaults: native settlement 60s, overall recovery
+90s, polls 0.5–3s, stable disconnected interval 2s. Session duration remains the outer limit.
+The TUI shows waiting/settling phases and native/firewall transitions rather than an immediate error.
+
+The full matrix is durable, including candidates beyond the 1,000 displayed rows. Continue scan
+resumes the same identifier; completed combinations are not regenerated. Original UNKNOWN results
+stay UNKNOWN; separate settlement records permit safe continuation. Session records and crash
+reservations prevent an uncertain dispatch being blindly repeated. Initial resume requires a
+Disconnected native environment; unresolved IPC/crash reservations remain paused for inspection.
+
+```bash
+auto-windscribe scan --profile exhaustive --settlement-timeout 60 --recovery-timeout 90
+auto-windscribe results --manifest 5 --offline --json
+auto-windscribe scan --resume 5
+auto-windscribe scan --profile exhaustive --no-continue-after-success
+```
+
+Manifests show total/tested/verified/failed/unknown/completed/remaining counts and sessions. The job
+status and session progress are separate. ETA includes measured recovery overhead and appears only
+after enough observations; thousands of native attempts can require many hours or days.
+
+[State machine and evidence](docs/V04.md) · [Reversible headless migration plan](docs/HEADLESS_MIGRATION.md).
+The desktop popup cannot be suppressed through a verified supported interface. Official CLI-only
+is recommended for a separately approved evaluation; no migration has been performed. Firewall-on
+blocked baselines remain protected; no VPN-only bypass or automatic firewall change is provided.

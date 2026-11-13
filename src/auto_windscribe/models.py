@@ -173,7 +173,11 @@ class Profile:
     auto_recover: bool = True
     max_recoveries: int = 2
     recovery_delay: float = 2.0
-    recovery_timeout: float = 25.0
+    recovery_timeout: float = 90.0
+    settlement_timeout: float = 60.0
+    settlement_poll: float = 0.5
+    settlement_poll_max: float = 3.0
+    continue_after_success: bool | None = None
     health_endpoint: str = "https://1.1.1.1/cdn-cgi/trace"
     strategy: str = "turbo"
     dispatch_timeout: float = 10.0
@@ -220,10 +224,20 @@ class Profile:
         validate_endpoint(self.health_endpoint)
         if type(self.auto_recover) is not bool:
             raise ValueError("auto_recover must be boolean")
+        if (
+            self.continue_after_success is not None
+            and type(self.continue_after_success) is not bool
+        ):
+            raise ValueError("continue_after_success must be boolean or null")
+        if self.settlement_poll_max < self.settlement_poll:
+            raise ValueError("Maximum poll interval must not be shorter than initial interval")
         bounds = {
             "max_recoveries": (1, 2),
             "recovery_delay": (0.1, 15),
-            "recovery_timeout": (1, 120),
+            "recovery_timeout": (1, 300),
+            "settlement_timeout": (0.1, 180),
+            "settlement_poll": (0.01, 5),
+            "settlement_poll_max": (0.01, 10),
             "dispatch_timeout": (1, 60),
             "status_timeout": (1, 30),
             "validation_timeout": (1, 30),

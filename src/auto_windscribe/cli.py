@@ -68,6 +68,11 @@ def parser() -> argparse.ArgumentParser:
     locations.add_argument("--tier", choices=["all", "free", "pro", "unknown"], default="all")
     scan = sub.add_parser("scan", parents=[common], help="Plan or run a bounded sequential scan")
     scan.add_argument("--auto-recover", action=argparse.BooleanOptionalAction, default=None)
+    scan.add_argument("--settlement-timeout", type=float)
+    scan.add_argument("--recovery-timeout", type=float)
+    scan.add_argument(
+        "--continue-after-success", action=argparse.BooleanOptionalAction, default=None
+    )
     scan.add_argument("--max-recoveries", type=int)
     scan.add_argument("--recovery-delay", type=float)
     scan.add_argument("--profile", default=None)
@@ -93,6 +98,7 @@ def parser() -> argparse.ArgumentParser:
     results.add_argument(
         "--profile", default=None, help="Filter to this profile's network/settings context"
     )
+    results.add_argument("--manifest", type=int, metavar="SCAN_ID")
     results.add_argument("--history", action="store_true")
     results.add_argument("--scans", action="store_true")
     connect = sub.add_parser(
@@ -141,6 +147,9 @@ def scan_profile(args: argparse.Namespace, services: Services) -> Profile:
         for arg, field in (
             ("auto_recover", "auto_recover"),
             ("max_recoveries", "max_recoveries"),
+            ("settlement_timeout", "settlement_timeout"),
+            ("recovery_timeout", "recovery_timeout"),
+            ("continue_after_success", "continue_after_success"),
             ("recovery_delay", "recovery_delay"),
             ("max_tests", "max_tests"),
             ("preflight_concurrency", "preflight_concurrency"),
@@ -285,7 +294,9 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
                     machine,
                 )
     elif cmd == "results":
-        if args.scans:
+        if args.manifest is not None:
+            output(services.store.manifest(args.manifest), machine)
+        elif args.scans:
             output(services.store.scans(), machine)
         else:
             context = services.profile(args.profile).context if args.profile else None

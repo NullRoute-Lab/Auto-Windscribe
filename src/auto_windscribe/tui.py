@@ -108,6 +108,16 @@ class Preferences(ModalScreen[Profile | None]):
                         ", ".join(p.protocols),
                     ),
                     ("max_tests", "Maximum attempts, including retries", str(p.max_tests)),
+                    (
+                        "settlement_timeout",
+                        "Native settlement deadline (seconds)",
+                        str(p.settlement_timeout),
+                    ),
+                    (
+                        "recovery_timeout",
+                        "Overall recovery deadline (seconds)",
+                        str(p.recovery_timeout),
+                    ),
                     ("max_recoveries", "Maximum recovery checks (1–2)", str(p.max_recoveries)),
                     ("recovery_delay", "Recovery settling delay (seconds)", str(p.recovery_delay)),
                     ("timeout", "Connection timeout in seconds", str(p.timeout)),
@@ -211,6 +221,8 @@ class Preferences(ModalScreen[Profile | None]):
                 retries=int(value("retries")),
                 auto_recover=self.query_one("#pref-recovery", Switch).value,
                 max_recoveries=int(value("max_recoveries")),
+                settlement_timeout=float(value("settlement_timeout")),
+                recovery_timeout=float(value("recovery_timeout")),
                 recovery_delay=float(value("recovery_delay")),
                 session_budget=float(value("session_budget")),
                 preflight_concurrency=int(value("preflight_concurrency")),
@@ -336,6 +348,7 @@ class WindscribeApp(App[None]):
         yield Header(show_clock=True)
         yield Static(_("Loading read-only connection status…"), id="status", markup=False)
         yield Static("INTERNET: UNKNOWN · RECOVERY: idle", id="network", markup=False)
+        yield Static("Scan job: select or continue a saved scan", id="job", markup=False)
         yield Static("", id="overview", markup=False)
         with Horizontal(id="toolbar"):
             yield Input(placeholder=_("/ Search country, city or nickname…"), id="search")
@@ -385,7 +398,7 @@ class WindscribeApp(App[None]):
                 ("connect", "Connect", "primary"),
                 ("disconnect", "Disconnect", "warning"),
                 ("scan", "Rescan", "default"),
-                ("resume", "Resume", "default"),
+                ("resume", "Continue scan", "default"),
                 ("stop", "Pause / Stop", "default"),
                 ("help", "Help", "default"),
             ):
@@ -469,6 +482,12 @@ class WindscribeApp(App[None]):
             self.query_one("#status", Static).update(
                 f"{mode}  │  {s.state.value.upper()}  {s.location}  {s.protocol}"
                 f"{':' + str(s.port) if s.port else ''}  │  Firewall: {s.firewall}"
+                + (
+                    " · attempt elapsed "
+                    f"{time.monotonic() - self.services.controller.attempt_started:.0f}s"
+                    if self.operation and self.services.controller.attempt_started is not None
+                    else ""
+                )
             )
         except AppError as exc:
             self.status_data = Status()
@@ -788,10 +807,21 @@ class WindscribeApp(App[None]):
             self.refresh_status()
 
     def progress_event(self, event: Progress) -> None:
+        if event.phase in ("CONTINUING_SCAN", "CHECKPOINT", "SESSION"):
+            self.query_one("#job", Static).update(event.message)
         if event.phase in (
             "PRECHECK",
             "RECOVERY",
             "BASELINE_HEALTHY",
+            "WAITING_FOR_NATIVE",
+            "NATIVE_SETTLING",
+            "BASELINE_CHECKING",
+            "RECOVERED",
+            "CONTINUING_SCAN",
+            "UNSAFE_STATE",
+            "EXTERNAL_CONNECTION_DETECTED",
+            "RECOVERY_EXHAUSTED",
+            "CHECKPOINT",
             "RECOVERY_FAILED",
             "RECOVERY_PENDING",
         ):

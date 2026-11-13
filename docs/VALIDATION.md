@@ -41,3 +41,16 @@ passes, delayed unowned connections, GUI identity mismatch and automatic safe co
 All 142 v0.2 tests remain present and passing. No real health probe or VPN operation was run.
 Read-only native `help connect` and upstream source were inspected. Real internet-loss root cause
 and recovery effectiveness remain unverified. See RECOVERY.md for established defects and limits.
+
+## v0.4 validation
+
+178 offline tests pass on Python 3.12 and 3.14, including late settlement beyond the old two-check
+window, firewall transitions, unknown outcomes with independent settlement evidence, checkpoint
+persistence across restart, hard-crash reservations, cancellation during recovery, and execution
+past the thousandth queued candidate. Source/branch coverage is approximately 85%. Ruff, mypy,
+wheel/source archive audits and the GitHub offline matrix are required before handoff. No new live
+scan, health probe, GUI automation or system change is part of this release's validation.
+
+The installed executable is verified with version/help/dry-run and fake-adapter TUI checks.
+Public source research and private read-only application history inspection informed V04.md.
+No private runtime database, configuration or native raw log is included in the commit.

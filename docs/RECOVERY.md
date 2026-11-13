@@ -1,3 +1,5 @@
+> Current v0.4 behavior: see [V04.md](V04.md). Earlier release descriptions below are historical.
+
 # v0.3 recovery and desktop compatibility
 
 ## Established application defects versus unknown host causes

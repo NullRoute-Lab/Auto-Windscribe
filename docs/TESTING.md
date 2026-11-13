@@ -1,3 +1,5 @@
+> Current v0.4 behavior: see [V04.md](V04.md). Earlier release descriptions below are historical.
+
 # Offline testing
 
 The first release is validated with simulated adapters, not real VPN traffic. The ongoing agent

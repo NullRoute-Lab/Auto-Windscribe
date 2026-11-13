@@ -1,6 +1,6 @@
 # Development test authorization
 
-**Current v0.3 session: offline implementation and validation only.**
+**Current v0.4 session: offline implementation and validation only.**
 
 The prior single real connection test was authorized after the v0.1 publication;
 that permission was consumed. It does not authorize Turbo preflight, another
@@ -29,3 +29,5 @@ for the user to run directly and confirm a scan. Never interpret earlier consent
 tool permissions, or publication permission as new testing authorization.
 
 This session forbids real Google/DNS/HTTPS health checks and recovery cycles. Use fake adapters only.
+
+The prior v0.3 test authorization is consumed. v0.4 development is offline only, including settlement, firewall and exhaustive tests. No live probes or native mutations before fresh permission after publication.

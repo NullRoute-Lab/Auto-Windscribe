@@ -1,3 +1,5 @@
+> Current v0.4 behavior: see [V04.md](V04.md). Earlier release descriptions below are historical.
+
 # Troubleshooting
 
 Start with `auto-windscribe doctor`, which reads native version/status/capabilities and lists

@@ -38,6 +38,10 @@
   "auto_recover": true,
   "max_recoveries": 2,
   "recovery_delay": 2,
-  "recovery_timeout": 25,
-  "health_endpoint": "https://1.1.1.1/cdn-cgi/trace"
+  "recovery_timeout": 90,
+  "health_endpoint": "https://1.1.1.1/cdn-cgi/trace",
+  "settlement_timeout": 60,
+  "settlement_poll": 0.5,
+  "settlement_poll_max": 3,
+  "continue_after_success": null
 }

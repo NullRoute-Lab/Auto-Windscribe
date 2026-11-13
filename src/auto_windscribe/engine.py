@@ -60,6 +60,7 @@ class Controller:
         self.vpn, self.probe, self.store = vpn, probe, store
         self.lock, self.gate = lock, gate
         self.poll_interval = poll_interval
+        self.attempt_started: float | None = None
         self.preflight = preflight
         self.health = health
         self.recovery = NetworkRecoveryManager(vpn, health, self._disconnect) if health else None
@@ -157,6 +158,7 @@ class Controller:
             if not report.safe:
                 raise SafetyError("baseline_unhealthy", "Baseline is not safe for a VPN attempt.")
         self.owned = None
+        self.attempt_started = time.monotonic()
         self.candidate_states[candidate.key] = "VPN connecting"
         self.emit(Progress("VPN connecting", message=candidate.key))
         phase = "preparation"
@@ -313,10 +315,24 @@ class Controller:
         self.gate.require_live()
         with self.lock.hold():
             self.task = asyncio.current_task()
+            initial_attempts = self.store.scan(scan_id)["attempts"]
+            session_id = self.store.start_session(scan_id)
+            self.attempt_started = None
+            manifest = self.store.manifest(scan_id)
+            self.emit(
+                Progress(
+                    "SESSION",
+                    message=f"Job {scan_id} · session {session_id} · total {manifest['total']} · "
+                    f"completed {manifest['completed']} · remaining {manifest['remaining']}",
+                )
+            )
             try:
                 profile = Profile.from_dict(json.loads(self.store.scan(scan_id)["profile"]))
                 async with asyncio.timeout(profile.session_budget):
                     await self._scan(scan_id, catalog)
+            except AppError:
+                self.store.set_state(scan_id, "paused")
+                raise
             except TimeoutError:
                 self.store.set_state(scan_id, "paused")
                 self.emit(
@@ -326,6 +342,19 @@ class Controller:
                 self.store.set_state(scan_id, "paused")
                 raise
             finally:
+                self.store.end_session(
+                    session_id, self.store.scan(scan_id)["attempts"] - initial_attempts
+                )
+                manifest = self.store.manifest(scan_id)
+                self.emit(
+                    Progress(
+                        "SESSION",
+                        message=f"Job {scan_id} · session {session_id} · "
+                        f"{self.store.scan(scan_id)['state']} · total {manifest['total']} · "
+                        f"tested {manifest['tested']} · verified {manifest['verified']} · "
+                        f"completed {manifest['completed']} · remaining {manifest['remaining']}",
+                    )
+                )
                 self.task = None
 
     async def _scan(self, scan_id: int, catalog: Catalog) -> None:
@@ -344,7 +373,7 @@ class Controller:
                 raise SafetyError(
                     "catalog_changed",
                     "Queued endpoint is no longer available; "
-                    "generate a new scan after refreshing the catalog.",
+                    "queue retained; refresh and resume when the endpoint is available.",
                 )
         self.task = asyncio.current_task()
         self.store.set_state(scan_id, "running")
@@ -379,6 +408,15 @@ class Controller:
             for e in self.evidence.values():
                 self.store.record_preflight(scan_id, e)
         active: tuple[int, Candidate] | None = None
+        recorded = False
+        if self.recovery:
+            self.recovery.emit = lambda r: self.emit(
+                Progress(
+                    r.phase,
+                    message=f"{r.reason} · {r.elapsed_s:.1f}s · baseline checks {r.checks} · "
+                    f"timeline {r.timeline[-1:]!s}",
+                )
+            )
         try:
             index = 0
             while pending:
@@ -398,6 +436,25 @@ class Controller:
                 position = next(pos for pos, c in pending if c == candidate)
                 pending.remove((position, candidate))
                 attempted.append(candidate)
+                previous = self.store.previous(scan_id, candidate)
+                if previous is not None and self.recovery is not None:
+                    resume_report = await self.recovery.recover(
+                        profile,
+                        candidate,
+                        unresolved=previous.outcome == Outcome.CANCELLED
+                        or previous.phase == "dispatch"
+                        or (
+                            previous.outcome == Outcome.UNKNOWN
+                            and "connecting" not in previous.observations
+                            and previous.connect_s is None
+                        ),
+                    )
+                    self.store.recovery_record(scan_id, resume_report)
+                    if not resume_report.safe:
+                        self.store.set_state(scan_id, "paused")
+                        return
+                    self.store.checkpoint(scan_id, position)
+                    continue
                 index += 1
                 if self.owned:
                     await self._disconnect(self.owned)
@@ -405,6 +462,7 @@ class Controller:
                     if attempts >= profile.max_tests:
                         break
                     active = (position, candidate)
+                    recorded = False
                     effective = profile
                     history = [
                         r
@@ -417,9 +475,12 @@ class Controller:
                             effective = replace(
                                 profile, timeout=min(profile.timeout, max(3, prior * 2 + 3))
                             )
+                    self.store.reserve(scan_id, candidate)
                     attempt_started = time.monotonic()
                     result = await self._attempt(candidate, effective)
-                    durations.append(time.monotonic() - attempt_started)
+                    self.store.record(result, scan_id, position, complete=False)
+                    recorded = True
+                    self.store.release(scan_id, candidate)
                     self.candidate_states[candidate.key] = result.state_label
                     attempts += 1
                     again = (
@@ -449,11 +510,33 @@ class Controller:
                                 self.owned = None
                         if not recovered:
                             again = False
-                    self.store.record(
-                        result,
+                    self.store.checkpoint(
                         scan_id,
                         position,
                         complete=not again and (result.outcome != Outcome.UNKNOWN or recovered),
+                    )
+                    durations.append(time.monotonic() - attempt_started)
+                    manifest = self.store.manifest(scan_id)
+                    job_eta = (
+                        (sum(durations) / len(durations) + profile.interval) * manifest["remaining"]
+                        if len(durations) >= 3
+                        else None
+                    )
+                    self.emit(
+                        Progress(
+                            "CONTINUING_SCAN" if recovered else "CHECKPOINT",
+                            manifest["completed"],
+                            manifest["total"],
+                            f"Scan {scan_id}: tested {manifest['tested']}, "
+                            f"verified {manifest['verified']}, "
+                            f"remaining {manifest['remaining']}; "
+                            f"session attempts {attempts}/{profile.max_tests}; "
+                            + (
+                                f"job ETA ~{job_eta:.0f}s including recovery"
+                                if job_eta is not None
+                                else "job ETA unknown"
+                            ),
+                        )
                     )
                     active = None
                     eta = (
@@ -483,7 +566,11 @@ class Controller:
                     ):
                         self.store.set_state(scan_id, "paused")
                         return
-                    if result.outcome == Outcome.SUCCESS and profile.mode != "rank":
+                    if result.outcome == Outcome.SUCCESS and not (
+                        profile.continue_after_success
+                        if profile.continue_after_success is not None
+                        else profile.mode == "rank"
+                    ):
                         self.store.set_state(scan_id, "succeeded")
                         return
                     if not again:
@@ -495,7 +582,7 @@ class Controller:
                     await asyncio.sleep(profile.interval)
             self.store.set_state(scan_id, "limited" if self.store.pending(scan_id) else "complete")
         except asyncio.CancelledError:
-            if active:
+            if active and not recorded:
                 self.candidate_states[active[1].key] = "cancelled"
                 self.store.record(
                     Result(
@@ -509,10 +596,12 @@ class Controller:
                     active[0],
                     complete=False,
                 )
+            if self.recovery:
+                self.store.recovery_record(scan_id, self.recovery.last)
             self.store.set_state(scan_id, "paused")
             raise
         except AppError as exc:
-            if active:
+            if active and not recorded:
                 self.store.record(
                     Result(active[1], Outcome.UNKNOWN, exc.code, str(exc), context=profile.context),
                     scan_id,

@@ -222,7 +222,7 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
             self.conn.close()
             raise AppError("schema_newer", "Database was created by a newer application.")
         self.conn.executescript("""
@@ -247,7 +247,12 @@ class Store:
             );
             CREATE TABLE IF NOT EXISTS recovery_events (
                 id INTEGER PRIMARY KEY, scan_id INTEGER, created REAL, payload TEXT);
-            PRAGMA user_version=2;
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY, scan_id INTEGER NOT NULL, started REAL NOT NULL,
+                ended REAL, attempts INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS in_flight (
+                scan_id INTEGER, candidate_key TEXT, PRIMARY KEY(scan_id,candidate_key));
+            PRAGMA user_version=3;
         """)
 
     def close(self) -> None:
@@ -357,3 +362,93 @@ class Store:
             "SELECT payload FROM recovery_events ORDER BY id DESC LIMIT 1"
         ).fetchone()
         return json.loads(row[0]) if row else {"phase": "not attempted"}
+
+    def checkpoint(self, scan_id: int, position: int, complete: bool = True) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE queue SET done=? WHERE scan_id=? AND position=?",
+                (int(complete), scan_id, position),
+            )
+
+    def previous(self, scan_id: int, candidate: Candidate) -> Result | None:
+        if self.conn.execute(
+            "SELECT 1 FROM in_flight WHERE scan_id=? AND candidate_key=?", (scan_id, candidate.key)
+        ).fetchone():
+            from .models import Outcome
+
+            return Result(
+                candidate,
+                Outcome.UNKNOWN,
+                "interrupted_dispatch",
+                "Process ended before committing attempt outcome",
+                phase="dispatch",
+            )
+        row = self.conn.execute(
+            "SELECT payload FROM results WHERE scan_id=? AND candidate_key=? "
+            "ORDER BY id DESC LIMIT 1",
+            (scan_id, candidate.key),
+        ).fetchone()
+        return Result.from_dict(json.loads(row[0])) if row else None
+
+    def start_session(self, scan_id: int) -> int:
+        with self.conn:
+            cursor = self.conn.execute(
+                "INSERT INTO sessions(scan_id,started) VALUES(?,?)", (scan_id, time.time())
+            )
+            return int(cursor.lastrowid or 0)
+
+    def end_session(self, session_id: int, attempts: int) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE sessions SET ended=?,attempts=? WHERE id=?",
+                (time.time(), attempts, session_id),
+            )
+
+    def manifest(self, scan_id: int) -> dict:
+        row = self.scan(scan_id)
+        counts = dict(
+            self.conn.execute(
+                "SELECT done,count(*) FROM queue WHERE scan_id=? GROUP BY done", (scan_id,)
+            ).fetchall()
+        )
+        latest = self.conn.execute(
+            "SELECT outcome,count(*) FROM results WHERE id IN "
+            "(SELECT max(id) FROM results WHERE scan_id=? GROUP BY candidate_key) GROUP BY outcome",
+            (scan_id,),
+        ).fetchall()
+        outcomes = dict(latest)
+        sessions = [
+            dict(r)
+            for r in self.conn.execute(
+                "SELECT * FROM sessions WHERE scan_id=? ORDER BY id", (scan_id,)
+            )
+        ]
+        return {
+            "scan_id": scan_id,
+            "state": row["state"],
+            "total": sum(counts.values()),
+            "completed": counts.get(1, 0),
+            "remaining": counts.get(0, 0),
+            "skipped": 0,
+            "tested": sum(outcomes.values()),
+            "verified": outcomes.get("success", 0),
+            "failed": outcomes.get("failed", 0),
+            "unknown": outcomes.get("unknown", 0),
+            "cancelled": outcomes.get("cancelled", 0),
+            "attempts": row["attempts"],
+            "sessions": sessions,
+            "profile": json.loads(row["profile"]),
+        }
+
+    def reserve(self, scan_id: int, candidate: Candidate) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO in_flight VALUES(?,?)", (scan_id, candidate.key)
+            )
+
+    def release(self, scan_id: int, candidate: Candidate) -> None:
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM in_flight WHERE scan_id=? AND candidate_key=?",
+                (scan_id, candidate.key),
+            )

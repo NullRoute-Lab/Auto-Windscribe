@@ -70,6 +70,9 @@ def classify(
     else:
         state = HealthState.DEGRADED
     # Firewall On is correlation, not proof it blocked packets. Never infer causality.
+    detail = "Firewall state is observational; blocking cause unproven."
+    if status.state == State.DISCONNECTED and status.firewall.casefold() in ("on", "always on"):
+        detail = "Firewall enabled while disconnected; blocking may be policy. No bypass performed."
     return HealthReport(
         state,
         status.state.value,
@@ -79,7 +82,7 @@ def classify(
         google,
         independent,
         route,
-        "Firewall state is observational; blocking cause unproven.",
+        detail,
     )
 
 

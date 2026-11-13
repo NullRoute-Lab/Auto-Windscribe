@@ -37,6 +37,8 @@ def test_firewall_state_is_not_causal_proof(firewall):
         Status(State.DISCONNECTED, firewall=firewall), False, False, False, False, "present"
     )
     assert r.state == HealthState.NO_CONNECTIVITY and r.firewall == firewall
+    if firewall != "Off":
+        assert "policy" in r.detail
 
 
 async def test_exact_health_commands_and_redaction(profile):
@@ -91,7 +93,15 @@ async def test_bounded_recovery_checks(profile, outcomes, expected, count):
     checker = AsyncMock(check=AsyncMock(side_effect=[health(v) for v in outcomes]))
     disconnect = AsyncMock()
     manager = NetworkRecoveryManager(FakeVPN(), checker, disconnect)
-    result = await manager.recover(replace(profile, recovery_delay=0.1))
+    result = await manager.recover(
+        replace(
+            profile,
+            recovery_delay=0.1,
+            settlement_timeout=0.5,
+            settlement_poll=0.01,
+            settlement_poll_max=0.02,
+        )
+    )
     assert result.safe == expected and result.checks == count
     disconnect.assert_not_awaited()
 
@@ -102,7 +112,13 @@ async def test_uncertain_state_never_dispatches(profile, state):
     vpn.current = Status(state)
     checker, disconnect = AsyncMock(), AsyncMock()
     result = await NetworkRecoveryManager(vpn, checker, disconnect).recover(
-        replace(profile, recovery_delay=0.1)
+        replace(
+            profile,
+            recovery_delay=0.1,
+            settlement_timeout=0.5,
+            settlement_poll=0.01,
+            settlement_poll_max=0.02,
+        )
     )
     assert not result.safe and not vpn.calls
     checker.check.assert_not_awaited()
@@ -153,7 +169,19 @@ async def test_owned_tunnel_graceful_disconnect_only_once(profile, candidate):
     manager = NetworkRecoveryManager(
         vpn, AsyncMock(check=AsyncMock(return_value=health())), disconnect
     )
-    assert (await manager.recover(replace(profile, recovery_delay=0.1), candidate, owned=True)).safe
+    assert (
+        await manager.recover(
+            replace(
+                profile,
+                recovery_delay=0.1,
+                settlement_timeout=0.5,
+                settlement_poll=0.01,
+                settlement_poll_max=0.02,
+            ),
+            candidate,
+            owned=True,
+        )
+    ).safe
     assert vpn.calls == [("disconnect",)]
 
 
@@ -206,16 +234,23 @@ async def test_unacknowledged_ipc_does_not_become_safe_by_waiting(profile):
 
 async def test_settling_connection_can_return_to_baseline(profile):
     vpn = FakeVPN()
-    vpn.status = AsyncMock(
-        side_effect=[
-            Status(State.CONNECTING),
-            Status(State.DISCONNECTED),
-            Status(State.DISCONNECTED),
-        ]
-    )
+    states = [Status(State.CONNECTING)] * 4
+
+    async def status():
+        return states.pop(0) if states else Status(State.DISCONNECTED)
+
+    vpn.status = status
     disconnect = AsyncMock()
     report = await NetworkRecoveryManager(
         vpn, AsyncMock(check=AsyncMock(return_value=health())), disconnect
-    ).recover(replace(profile, recovery_delay=0.1))
-    assert report.safe and report.checks == 2
+    ).recover(
+        replace(
+            profile,
+            recovery_delay=0.1,
+            settlement_timeout=0.5,
+            settlement_poll=0.01,
+            settlement_poll_max=0.02,
+        )
+    )
+    assert report.safe and report.checks == 1
     disconnect.assert_not_awaited()
