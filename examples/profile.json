@@ -43,5 +43,9 @@
   "settlement_timeout": 60,
   "settlement_poll": 0.5,
   "settlement_poll_max": 3,
-  "continue_after_success": null
+  "continue_after_success": null,
+  "gui_restart": false,
+  "gui_restart_limit": 2,
+  "gui_stop_timeout": 15,
+  "gui_start_timeout": 30
 }

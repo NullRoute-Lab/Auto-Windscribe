@@ -1,3 +1,5 @@
+> v0.5 adds opt-in GUI recovery and durable deferred/retry dispositions; see [GUI_RECOVERY.md](GUI_RECOVERY.md). Existing settlement rules below remain applicable.
+
 > Current v0.4 behavior: see [V04.md](V04.md). Earlier release descriptions below are historical.
 
 # Troubleshooting

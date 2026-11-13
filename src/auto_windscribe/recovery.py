@@ -62,7 +62,7 @@ class NetworkRecoveryManager:
         native_deadline = started + profile.settlement_timeout
         interval = profile.settlement_poll
         stable_since: float | None = None
-        previous: tuple[str, str] | None = None
+        previous: tuple[str, str, str] | None = None
         self.emit(self.last)
         try:
             async with asyncio.timeout(profile.recovery_timeout):
@@ -85,13 +85,14 @@ class NetworkRecoveryManager:
                         await asyncio.sleep(interval)
                         continue
                     self.last.elapsed_s = time.monotonic() - started
-                    event = (status.state.value, status.firewall)
+                    event = (status.state.value, status.firewall, status.diagnostic)
                     if event != previous:
                         self.last.timeline.append(
                             {
                                 "seconds": round(self.last.elapsed_s, 3),
                                 "native": status.state.value,
                                 "firewall": status.firewall,
+                                "diagnostic": status.diagnostic,
                             }
                         )
                         self.last.timeline[:] = self.last.timeline[-256:]

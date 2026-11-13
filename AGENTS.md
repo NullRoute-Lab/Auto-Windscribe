@@ -2,7 +2,7 @@
 
 ## Current development authorization
 
-The v0.4 Turbo Discovery implementation is authorized. The earlier permission
+The v0.5 Turbo Discovery implementation is authorized. The earlier permission
 covered one live connection test and is consumed. During this development session,
 **do not execute VPN connect/disconnect, DNS endpoint resolution, TCP/TLS endpoint
 probes, ping, HTTPS connectivity checks, benchmarks over real networks, or scans**.
@@ -46,4 +46,6 @@ ask for new permission for a small bounded Turbo test. See docs/TEST_AUTHORIZATI
 
 This session forbids real Google/DNS/HTTPS health checks and recovery cycles. Use fake adapters only.
 
-The prior v0.3 test authorization is consumed. v0.4 development is offline only, including settlement, firewall and exhaustive tests. No live probes or native mutations before fresh permission after publication.
+All prior v0.3/v0.4 live-test authorizations are consumed. v0.5 development is offline only, including settlement, firewall and exhaustive tests. No live probes or native mutations before fresh permission after publication.
+
+GUI recovery implementation is authorized; real GUI shutdown/relaunch is NOT. Use fake GUI processes. Prior live permissions are consumed. No helper signals or host networking changes.

@@ -54,3 +54,21 @@ scan, health probe, GUI automation or system change is part of this release's va
 The installed executable is verified with version/help/dry-run and fake-adapter TUI checks.
 Public source research and private read-only application history inspection informed V04.md.
 No private runtime database, configuration or native raw log is included in the commit.
+
+
+## v0.5 validation
+
+The suite contains 227 offline tests, preserving all 178 v0.4 tests. New regressions cover verified
+PID/UID/executable targeting, SIGTERM only, GUI readiness, launch/shutdown failures, firewall and
+external-connection refusal, cancellation with passive polling suspended, restart budgets, operation
+lock exclusion, attempt/recovery linkage, deferred UNKNOWN outcomes and explicit retry across restart.
+Python 3.12/3.14, Ruff, mypy, wheel/sdist archive audits and GitHub Actions are publication gates.
+Coverage is approximately 84% combined lines/branches. Raw reports remain ignored under artifacts/.
+
+Read-only CLI help, RPM file metadata and exact executable/process identity were inspected. The
+installed package GUI executable resolves successfully through its desktop entry. No GUI was
+signalled/launched, no native status was invoked during this identity inspection, and no live VPN or
+network probe was performed. Upstream v2.25.8 source establishes graceful SIGTERM and CLI auto-launch
+behavior; actual restart safety/effectiveness still needs separately authorized live validation.
+
+The isolated Python 3.12 build omits optional Python pidfd APIs. The Linux adapter uses glibc pidfd_open/pidfd_send_signal through ctypes; exact calls and error paths are tested with fake libc functions, never real signals.

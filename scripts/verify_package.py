@@ -4,11 +4,12 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-for archive in Path("dist").glob("auto_windscribe-0.4.0*"):
+for archive in Path("dist").glob("auto_windscribe-0.5.0*"):
     if archive.suffix == ".whl":
         with zipfile.ZipFile(archive) as wheel:
             names = wheel.namelist()
             assert "auto_windscribe/preflight.py" in names
+            assert "auto_windscribe/gui_manager.py" in names
             entry = next(n for n in names if n.endswith("entry_points.txt"))
             assert b"auto-windscribe = auto_windscribe.cli:main" in wheel.read(entry)
     else:
@@ -16,6 +17,7 @@ for archive in Path("dist").glob("auto_windscribe-0.4.0*"):
             names = source.getnames()
             assert any(n.endswith("benchmarks/preflight.py") for n in names)
             assert any(n.endswith("docs/TEST_AUTHORIZATION.md") for n in names)
+            assert any(n.endswith("docs/GUI_RECOVERY.md") for n in names)
     for name in names:
         assert not any(
             part in name
@@ -29,5 +31,5 @@ for archive in Path("dist").glob("auto_windscribe-0.4.0*"):
         )
         assert not name.endswith((".key", ".pem", ".ovpn", ".env", ".log"))
     print(f"Audited {archive.name}: {len(names)} files")
-assert list(Path("dist").glob("auto_windscribe-0.4.0*.whl"))
-assert list(Path("dist").glob("auto_windscribe-0.4.0*.tar.gz"))
+assert list(Path("dist").glob("auto_windscribe-0.5.0*.whl"))
+assert list(Path("dist").glob("auto_windscribe-0.5.0*.tar.gz"))

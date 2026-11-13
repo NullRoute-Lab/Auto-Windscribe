@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .errors import AppError, SafetyError
+from .gui_manager import GUIReport, WindscribeGUIManager
 from .health import NetworkHealthChecker
 from .models import Candidate, Metrics, Outcome, Profile, Result, State, Status
 from .preflight import Evidence, Preflight
@@ -61,6 +62,7 @@ class Controller:
         self.lock, self.gate = lock, gate
         self.poll_interval = poll_interval
         self.attempt_started: float | None = None
+        self.gui: WindscribeGUIManager | None = None
         self.preflight = preflight
         self.health = health
         self.recovery = NetworkRecoveryManager(vpn, health, self._disconnect) if health else None
@@ -128,6 +130,36 @@ class Controller:
                 await self._disconnect()
             finally:
                 self.task = None
+
+    @staticmethod
+    def gui_message(report: GUIReport) -> str:
+        return (
+            f"GUI: {report.gui} · CLI: {report.cli} · VPN: {report.native} · "
+            f"Firewall: {report.firewall} · Internet: {report.internet} · "
+            f"restarts {report.restarts} · {report.reason}"
+        )
+
+    async def recover_gui(self, profile: Profile) -> GUIReport:
+        self.gate.require_live()
+        if self.gui is None:
+            raise SafetyError("gui_unavailable", "GUI recovery adapter is unavailable")
+        with self.lock.hold():
+            self.task = asyncio.current_task()
+            self.gui.begin_session()
+            self.gui.emit = lambda r: self.emit(Progress(r.phase, message=self.gui_message(r)))
+            try:
+                # An interrupted application dispatch cannot be made safe by restarting its GUI.
+                return await self.gui.restart(
+                    profile, unresolved=self.store.has_unresolved_dispatch()
+                )
+            finally:
+                self.store.recovery_record(None, self.gui.last)
+                self.task = None
+
+    def retry_deferred(self, scan_id: int) -> int:
+        self.gate.require_live()
+        with self.lock.hold():
+            return self.store.retry_deferred(scan_id)
 
     async def _quality(self, candidate: Candidate, profile: Profile) -> Metrics:
         task = asyncio.create_task(self.probe.measure(profile))
@@ -290,6 +322,11 @@ class Controller:
         with self.lock.hold():
             self.task = asyncio.current_task()
             try:
+                if self.store.has_unresolved_dispatch():
+                    raise SafetyError(
+                        "pending_dispatch",
+                        "A saved dispatch remains unresolved; inspect its scan before connecting",
+                    )
                 if interrupt:
                     await self._disconnect()
                 result = await self._attempt(candidate, profile)
@@ -311,10 +348,18 @@ class Controller:
             finally:
                 self.task = None
 
-    async def scan(self, scan_id: int, catalog: Catalog) -> None:
+    async def scan(self, scan_id: int, catalog: Catalog, gui_restart: bool | None = None) -> None:
         self.gate.require_live()
         with self.lock.hold():
+            if self.store.has_unresolved_dispatch(except_scan=scan_id):
+                raise SafetyError(
+                    "pending_dispatch",
+                    "Another saved scan has an unresolved dispatch; no competing request sent",
+                )
             self.task = asyncio.current_task()
+            if self.gui:
+                self.gui.begin_session()
+                self.gui.emit = lambda r: self.emit(Progress(r.phase, message=self.gui_message(r)))
             initial_attempts = self.store.scan(scan_id)["attempts"]
             session_id = self.store.start_session(scan_id)
             self.attempt_started = None
@@ -323,13 +368,16 @@ class Controller:
                 Progress(
                     "SESSION",
                     message=f"Job {scan_id} · session {session_id} · total {manifest['total']} · "
-                    f"completed {manifest['completed']} · remaining {manifest['remaining']}",
+                    f"completed {manifest['completed']} · deferred {manifest['deferred']} · "
+                    f"remaining {manifest['remaining']}",
                 )
             )
             try:
                 profile = Profile.from_dict(json.loads(self.store.scan(scan_id)["profile"]))
+                if gui_restart is not None:
+                    profile = replace(profile, gui_restart=gui_restart)
                 async with asyncio.timeout(profile.session_budget):
-                    await self._scan(scan_id, catalog)
+                    await self._scan(scan_id, catalog, profile)
             except AppError:
                 self.store.set_state(scan_id, "paused")
                 raise
@@ -352,16 +400,19 @@ class Controller:
                         message=f"Job {scan_id} · session {session_id} · "
                         f"{self.store.scan(scan_id)['state']} · total {manifest['total']} · "
                         f"tested {manifest['tested']} · verified {manifest['verified']} · "
-                        f"completed {manifest['completed']} · remaining {manifest['remaining']}",
+                        f"completed {manifest['completed']} · deferred {manifest['deferred']} · "
+                        f"remaining {manifest['remaining']}",
                     )
                 )
                 self.task = None
 
-    async def _scan(self, scan_id: int, catalog: Catalog) -> None:
+    async def _scan(
+        self, scan_id: int, catalog: Catalog, session_profile: Profile | None = None
+    ) -> None:
         await self._disconnected()
         self.owned = None
         row = self.store.scan(scan_id)
-        profile = Profile.from_dict(json.loads(row["profile"]))
+        profile = session_profile or Profile.from_dict(json.loads(row["profile"]))
         pending = self.store.pending(scan_id)
         # Resumes must still be valid in the latest official catalog/capabilities.
         available = {loc.key for loc in catalog.locations if loc.available}
@@ -449,11 +500,27 @@ class Controller:
                             and previous.connect_s is None
                         ),
                     )
-                    self.store.recovery_record(scan_id, resume_report)
-                    if not resume_report.safe:
+                    self.store.recovery_record(scan_id, resume_report, candidate)
+                    resumed = resume_report.safe
+                    if (
+                        not resumed
+                        and self.gui
+                        and profile.gui_restart
+                        and previous.phase == "establishment"
+                        and previous.code in ("tunnel_failed", "connection_failed")
+                    ):
+                        gui_report = await self.gui.restart(
+                            profile, trigger="native_manual_failure", candidate_key=candidate.key
+                        )
+                        self.store.recovery_record(scan_id, gui_report, candidate)
+                        resumed = gui_report.safe
+                    if not resumed:
                         self.store.set_state(scan_id, "paused")
                         return
-                    self.store.checkpoint(scan_id, position)
+                    if previous.outcome == Outcome.UNKNOWN:
+                        self.store.defer(scan_id, position)
+                    else:
+                        self.store.checkpoint(scan_id, position)
                     continue
                 index += 1
                 if self.owned:
@@ -504,8 +571,32 @@ class Controller:
                                 unresolved=unresolved,
                             )
                             recovered = recovery.safe
-                            self.store.recovery_record(scan_id, recovery)
+                            self.store.recovery_record(scan_id, recovery, candidate)
                             self.emit(Progress(recovery.phase, message=recovery.reason))
+                            if (
+                                not recovered
+                                and self.gui
+                                and profile.gui_restart
+                                and not unresolved
+                            ):
+                                # Native failure evidence, not popup detection.
+                                # A timeout alone is insufficient.
+                                native_failure = result.code in (
+                                    "tunnel_failed",
+                                    "connection_failed",
+                                )
+                                native_failure |= any(
+                                    e.get("diagnostic") == "tunnel_failed"
+                                    for e in recovery.timeline
+                                )
+                                if native_failure:
+                                    gui_report = await self.gui.restart(
+                                        profile,
+                                        trigger="native_manual_failure",
+                                        candidate_key=candidate.key,
+                                    )
+                                    self.store.recovery_record(scan_id, gui_report, candidate)
+                                    recovered = gui_report.safe
                             if recovered:
                                 self.owned = None
                         if not recovered:
@@ -515,6 +606,8 @@ class Controller:
                         position,
                         complete=not again and (result.outcome != Outcome.UNKNOWN or recovered),
                     )
+                    if result.outcome == Outcome.UNKNOWN and recovered:
+                        self.store.defer(scan_id, position)
                     durations.append(time.monotonic() - attempt_started)
                     manifest = self.store.manifest(scan_id)
                     job_eta = (
@@ -528,7 +621,7 @@ class Controller:
                             manifest["completed"],
                             manifest["total"],
                             f"Scan {scan_id}: tested {manifest['tested']}, "
-                            f"verified {manifest['verified']}, "
+                            f"verified {manifest['verified']}, deferred {manifest['deferred']}, "
                             f"remaining {manifest['remaining']}; "
                             f"session attempts {attempts}/{profile.max_tests}; "
                             + (
@@ -597,7 +690,11 @@ class Controller:
                     complete=False,
                 )
             if self.recovery:
-                self.store.recovery_record(scan_id, self.recovery.last)
+                self.store.recovery_record(
+                    scan_id, self.recovery.last, active[1] if active else None
+                )
+            if self.gui and self.gui.last.phase == "GUI_CANCELLED":
+                self.store.recovery_record(scan_id, self.gui.last, active[1] if active else None)
             self.store.set_state(scan_id, "paused")
             raise
         except AppError as exc:

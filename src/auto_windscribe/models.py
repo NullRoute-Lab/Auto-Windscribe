@@ -170,6 +170,10 @@ class Profile:
     download: bool = False
     network_label: str = "default"
     settings_label: str = "gui-unchanged"
+    gui_restart: bool = False
+    gui_restart_limit: int = 2
+    gui_stop_timeout: float = 15.0
+    gui_start_timeout: float = 30.0
     auto_recover: bool = True
     max_recoveries: int = 2
     recovery_delay: float = 2.0
@@ -222,6 +226,8 @@ class Profile:
         from .health import validate_endpoint
 
         validate_endpoint(self.health_endpoint)
+        if type(self.gui_restart) is not bool:
+            raise ValueError("gui_restart must be boolean")
         if type(self.auto_recover) is not bool:
             raise ValueError("auto_recover must be boolean")
         if (
@@ -232,6 +238,9 @@ class Profile:
         if self.settlement_poll_max < self.settlement_poll:
             raise ValueError("Maximum poll interval must not be shorter than initial interval")
         bounds = {
+            "gui_restart_limit": (1, 4),
+            "gui_stop_timeout": (1, 60),
+            "gui_start_timeout": (1, 120),
             "max_recoveries": (1, 2),
             "recovery_delay": (0.1, 15),
             "recovery_timeout": (1, 300),
@@ -264,6 +273,7 @@ class Profile:
         for key in (
             "max_tests",
             "max_recoveries",
+            "gui_restart_limit",
             "retries",
             "ping_count",
             "preflight_concurrency",

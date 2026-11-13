@@ -245,3 +245,43 @@ async def test_slow_status_refresh_is_not_cancelled_by_next_poll(paths):
             app.request_exit()
     finally:
         services.store.close()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["recover-gui", "--dry-run"],
+        ["recover-gui", "--offline", "--live"],
+        ["retry-deferred", "1", "--dry-run"],
+        ["retry-deferred", "1", "--offline"],
+    ],
+)
+def test_gui_and_retry_dry_runs_are_nonmutating(args):
+    assert main(args) == 0
+
+
+async def test_tui_gui_recovery_controls_and_poll_suspension(paths):
+    from unittest.mock import AsyncMock
+
+    from auto_windscribe.gui_manager import WindscribeGUIManager
+    from tests.test_gui_recovery import Processes
+
+    services = demo_services(paths)
+    manager = WindscribeGUIManager(Processes(), services.vpn, AsyncMock(), services.controller.gate)
+    services.controller.gui = manager
+    app = WindscribeApp(services)
+    try:
+        async with app.run_test(size=(140, 45)) as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.press("g")
+            assert isinstance(app.screen, Confirm)
+            await pilot.press("escape")
+            manager.suspend_cli = True
+            services.vpn.status = AsyncMock()
+            app.refresh_status()
+            await app.workers.wait_for_complete()
+            services.vpn.status.assert_not_awaited()
+            await pilot.press("q")
+        assert services.vpn.calls == []
+    finally:
+        services.store.close()

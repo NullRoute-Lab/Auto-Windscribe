@@ -109,6 +109,21 @@ class Preferences(ModalScreen[Profile | None]):
                     ),
                     ("max_tests", "Maximum attempts, including retries", str(p.max_tests)),
                     (
+                        "gui_restart_limit",
+                        "GUI restarts per session (1–4; one per incident)",
+                        str(p.gui_restart_limit),
+                    ),
+                    (
+                        "gui_stop_timeout",
+                        "GUI graceful shutdown deadline (seconds)",
+                        str(p.gui_stop_timeout),
+                    ),
+                    (
+                        "gui_start_timeout",
+                        "GUI startup/CLI readiness deadline (seconds)",
+                        str(p.gui_start_timeout),
+                    ),
+                    (
                         "settlement_timeout",
                         "Native settlement deadline (seconds)",
                         str(p.settlement_timeout),
@@ -151,6 +166,13 @@ class Preferences(ModalScreen[Profile | None]):
                     yield Input(
                         ", ".join(map(str, p.ports.get(proto, []))), id=f"pref-ports-{proto}"
                     )
+                yield Label(
+                    "GUI restart recovery (opt-in); disable Auto-connect in official GUI first"
+                )
+                yield Switch(p.gui_restart, id="pref-gui-restart")
+                yield Label(
+                    "Attempted combinations are skipped; retries require explicit policy/action"
+                )
                 yield Label(
                     "Automatic recovery: observe, settle, check baseline; no connection cycles"
                 )
@@ -219,6 +241,10 @@ class Preferences(ModalScreen[Profile | None]):
                 max_tests=int(value("max_tests")),
                 timeout=float(value("timeout")),
                 retries=int(value("retries")),
+                gui_restart=self.query_one("#pref-gui-restart", Switch).value,
+                gui_restart_limit=int(value("gui_restart_limit")),
+                gui_stop_timeout=float(value("gui_stop_timeout")),
+                gui_start_timeout=float(value("gui_start_timeout")),
                 auto_recover=self.query_one("#pref-recovery", Switch).value,
                 max_recoveries=int(value("max_recoveries")),
                 settlement_timeout=float(value("settlement_timeout")),
@@ -263,6 +289,8 @@ class Help(ModalScreen[None]):
                     "S   Save preferences as a named profile\n"
                     "O   Cycle sort order (or click a column heading)\n"
                     "D   Confirm system VPN disconnection\n"
+                    "G   Recover GUI (explicit restart consent; firewall Off only)\n"
+                    "Ctrl+R   Requeue deferred UNKNOWN candidates explicitly\n"
                     "X   Stop work and retain the current system VPN state\n"
                     "U   Refresh the official catalog\n"
                     "A   Toggle the startup scan offer (confirmation still required)\n"
@@ -302,8 +330,8 @@ class WindscribeApp(App[None]):
     TabbedContent { height: 1fr; margin: 0 1; }
     TabPane { padding: 0; }
     DataTable { height: 1fr; }
-    #actions { height: 3; margin: 0 1; }
-    #actions Button { min-width: 10; width: 1fr; margin: 0 1 0 0; }
+    #actions { height: 3; margin: 0 1; overflow-x: auto; }
+    #actions Button { min-width: 13; width: 1fr; margin: 0 1 0 0; }
     #progress { height: 1; margin: 0 2; }
     #message { height: 2; padding: 0 2; color: #a8b9ce; }
     #details { height: 3; padding: 0 1; background: #172338; }
@@ -318,6 +346,8 @@ class WindscribeApp(App[None]):
         Binding("a", "auto_scan", "Launch prompt", show=False),
         Binding("o", "sort", "Sort", show=False),
         Binding("space", "mark", "Mark", show=False),
+        Binding("g", "recover_gui", "Recover GUI", show=False),
+        Binding("ctrl+r", "retry_deferred", "Retry deferred", show=False),
         Binding("d", "disconnect", "Disconnect", show=False),
         Binding("x", "stop", "Stop"),
         Binding("u", "refresh", "Refresh", show=False),
@@ -348,6 +378,7 @@ class WindscribeApp(App[None]):
         yield Header(show_clock=True)
         yield Static(_("Loading read-only connection status…"), id="status", markup=False)
         yield Static("INTERNET: UNKNOWN · RECOVERY: idle", id="network", markup=False)
+        yield Static("GUI recovery: opt-in · state not inspected", id="gui", markup=False)
         yield Static("Scan job: select or continue a saved scan", id="job", markup=False)
         yield Static("", id="overview", markup=False)
         with Horizontal(id="toolbar"):
@@ -399,6 +430,8 @@ class WindscribeApp(App[None]):
                 ("disconnect", "Disconnect", "warning"),
                 ("scan", "Rescan", "default"),
                 ("resume", "Continue scan", "default"),
+                ("recover-gui", "Recover GUI", "warning"),
+                ("retry-deferred", "Retry deferred", "default"),
                 ("stop", "Pause / Stop", "default"),
                 ("help", "Help", "default"),
             ):
@@ -466,6 +499,10 @@ class WindscribeApp(App[None]):
 
     @work(group="status", exit_on_error=False)
     async def refresh_status(self) -> None:
+        if self.services.controller.gui and (
+            self.services.controller.gui.active or self.services.controller.gui.suspend_cli
+        ):
+            return  # CLI can auto-launch the desktop while it is intentionally closed.
         if self._status_pending:
             return
         self._status_pending = True
@@ -643,6 +680,8 @@ class WindscribeApp(App[None]):
             "disconnect": self.action_disconnect,
             "scan": self.action_scan,
             "resume": self.action_resume,
+            "recover-gui": self.action_recover_gui,
+            "retry-deferred": self.action_retry_deferred,
             "stop": self.action_stop,
             "help": self.action_help,
         }
@@ -725,6 +764,12 @@ class WindscribeApp(App[None]):
                 f"be interrupted. "
                 "Includes baseline health probes and recovery of scan-owned tunnels. "
                 "Native GUI prompts cannot be suppressed. Stop/Quit retain VPN state."
+                + (
+                    f" GUI recovery enabled, limit {self.profile.gui_restart_limit}; "
+                    "disable Auto-connect in the official GUI first."
+                    if self.profile.gui_restart
+                    else " GUI recovery disabled."
+                )
             ),
             lambda yes: self.start_scan(queue) if yes else None,
         )
@@ -759,9 +804,53 @@ class WindscribeApp(App[None]):
         self.push_screen(
             Confirm(
                 f"Resume scan {scan_id} with its saved profile and a new bounded session "
-                "budget? Start disconnected; internet may be interrupted."
+                "budget? Start disconnected; internet may be interrupted. "
+                + (
+                    "GUI recovery enabled for this session: disable official Auto-connect first."
+                    if self.profile.gui_restart
+                    else "GUI recovery disabled for this session."
+                )
             ),
             lambda yes: self.launch("scan", scan_id) if yes else None,
+        )
+
+    def action_recover_gui(self) -> None:
+        if not self.allowed():
+            return
+        if self.dry_run:
+            self.message("DRY RUN · Would inspect GUI restart eligibility. Nothing executed.")
+            return
+        self.push_screen(
+            Confirm(
+                "Restart only the verified Windscribe GUI and verify internet? "
+                "Disable Auto-connect in the official GUI first. "
+                "Requires authenticated Disconnected "
+                "with firewall Off and no pending request. No helper signals or force-kill."
+            ),
+            lambda yes: self.launch("recover-gui") if yes else None,
+        )
+
+    def action_retry_deferred(self) -> None:
+        if not self.allowed():
+            return
+        scans = [
+            s
+            for s in self.services.store.scans()
+            if self.services.store.manifest(s["id"])["deferred"]
+        ]
+        if not scans:
+            self.message("No safely deferred combinations to retry.")
+            return
+        scan_id = scans[0]["id"]
+        if self.dry_run:
+            self.message(f"DRY RUN · Would requeue deferred candidates in {scan_id}.")
+            return
+        self.push_screen(
+            Confirm(
+                f"Explicitly retry deferred UNKNOWN candidates in scan {scan_id}? "
+                "History is preserved. This requeues them without starting a scan."
+            ),
+            lambda yes: self.launch("retry-deferred", scan_id) if yes else None,
         )
 
     def action_disconnect(self) -> None:
@@ -790,11 +879,23 @@ class WindscribeApp(App[None]):
             if kind == "connect":
                 result = await self.services.controller.connect(value, self.profile)
                 self.message(f"{result.code}: {result.detail}")
+            elif kind == "recover-gui":
+                report = await self.services.controller.recover_gui(
+                    replace(self.profile, gui_restart=True)
+                )
+                self.message(report.reason)
+            elif kind == "retry-deferred":
+                count = self.services.controller.retry_deferred(value)
+                self.message(
+                    f"Requeued {count} deferred combinations in scan {value}. Use Continue scan."
+                )
             elif kind == "disconnect":
                 await self.services.controller.disconnect()
                 self.message("Disconnected; firewall preferences preserved.")
             elif self.catalog_data:
-                await self.services.controller.scan(value, self.catalog_data)
+                await self.services.controller.scan(
+                    value, self.catalog_data, gui_restart=self.profile.gui_restart
+                )
                 self.message(f"Scan {value}: {self.services.store.scan(value)['state']}.")
         except asyncio.CancelledError:
             self.message("Stopped. Current system VPN state retained; pending requests may finish.")
@@ -807,6 +908,12 @@ class WindscribeApp(App[None]):
             self.refresh_status()
 
     def progress_event(self, event: Progress) -> None:
+        if event.phase.startswith(("GUI_", "gui_")) or event.phase in (
+            "CLI_REINITIALIZING",
+            "NETWORK_HEALTH_CHECK",
+            "BASELINE_VERIFIED",
+        ):
+            self.query_one("#gui", Static).update(f"{event.phase}: {event.message}")
         if event.phase in ("CONTINUING_SCAN", "CHECKPOINT", "SESSION"):
             self.query_one("#job", Static).update(event.message)
         if event.phase in (
@@ -828,6 +935,10 @@ class WindscribeApp(App[None]):
             self.query_one("#network", Static).update(f"{event.phase}: {event.message}")
         self.message(f"{event.phase}: {event.message}")
         if event.result:
+            self.query_one("#details", Static).update(
+                f"Last attempted: {event.result.candidate.key} · "
+                f"{event.result.outcome.value} / {event.result.code}"
+            )
             self.query_one("#log", RichLog).write(
                 f"{event.result.phase} / {event.result.code} · {event.result.timings} · "
                 + ", ".join(event.result.observations)

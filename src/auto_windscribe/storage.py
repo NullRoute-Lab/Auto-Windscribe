@@ -222,7 +222,7 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3):
+        if version not in (0, 1, 2, 3, 4):
             self.conn.close()
             raise AppError("schema_newer", "Database was created by a newer application.")
         self.conn.executescript("""
@@ -252,7 +252,13 @@ class Store:
                 ended REAL, attempts INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS in_flight (
                 scan_id INTEGER, candidate_key TEXT, PRIMARY KEY(scan_id,candidate_key));
-            PRAGMA user_version=3;
+            CREATE TABLE IF NOT EXISTS dispositions (
+                scan_id INTEGER, position INTEGER, status TEXT NOT NULL,
+                updated REAL NOT NULL, PRIMARY KEY(scan_id,position));
+            CREATE TABLE IF NOT EXISTS attempt_recovery (
+                id INTEGER PRIMARY KEY, result_id INTEGER, scan_id INTEGER,
+                candidate_key TEXT, created REAL NOT NULL, payload TEXT NOT NULL);
+            PRAGMA user_version=4;
         """)
 
     def close(self) -> None:
@@ -350,12 +356,24 @@ class Store:
             )
         ]
 
-    def recovery_record(self, scan_id: int, report: Any) -> None:
+    def recovery_record(
+        self, scan_id: int | None, report: Any, candidate: Candidate | None = None
+    ) -> None:
         with self.conn:
             self.conn.execute(
                 "INSERT INTO recovery_events(scan_id,created,payload) VALUES(?,?,?)",
                 (scan_id, time.time(), encode(report)),
             )
+            if candidate is not None and scan_id is not None:
+                row = self.conn.execute(
+                    "SELECT max(id) FROM results WHERE scan_id=? AND candidate_key=?",
+                    (scan_id, candidate.key),
+                ).fetchone()
+                self.conn.execute(
+                    "INSERT INTO attempt_recovery(result_id,scan_id,candidate_key,created,payload) "
+                    "VALUES(?,?,?,?,?)",
+                    (row[0], scan_id, candidate.key, time.time(), encode(report)),
+                )
 
     def recovery_status(self) -> dict:
         row = self.conn.execute(
@@ -371,6 +389,14 @@ class Store:
             )
 
     def previous(self, scan_id: int, candidate: Candidate) -> Result | None:
+        disposition = self.conn.execute(
+            "SELECT d.status FROM dispositions d JOIN queue q "
+            "ON d.scan_id=q.scan_id AND d.position=q.position "
+            "WHERE q.scan_id=? AND q.candidate=?",
+            (scan_id, encode(candidate)),
+        ).fetchone()
+        if disposition and disposition[0] == "retry":
+            return None
         if self.conn.execute(
             "SELECT 1 FROM in_flight WHERE scan_id=? AND candidate_key=?", (scan_id, candidate.key)
         ).fetchone():
@@ -431,6 +457,11 @@ class Store:
             "remaining": counts.get(0, 0),
             "skipped": 0,
             "tested": sum(outcomes.values()),
+            "attempted": sum(outcomes.values()),
+            "deferred": self.conn.execute(
+                "SELECT count(*) FROM dispositions WHERE scan_id=? AND status='deferred'",
+                (scan_id,),
+            ).fetchone()[0],
             "verified": outcomes.get("success", 0),
             "failed": outcomes.get("failed", 0),
             "unknown": outcomes.get("unknown", 0),
@@ -443,6 +474,11 @@ class Store:
     def reserve(self, scan_id: int, candidate: Candidate) -> None:
         with self.conn:
             self.conn.execute(
+                "DELETE FROM dispositions WHERE scan_id=? AND position IN "
+                "(SELECT position FROM queue WHERE scan_id=? AND candidate=?)",
+                (scan_id, scan_id, encode(candidate)),
+            )
+            self.conn.execute(
                 "INSERT OR REPLACE INTO in_flight VALUES(?,?)", (scan_id, candidate.key)
             )
 
@@ -452,3 +488,42 @@ class Store:
                 "DELETE FROM in_flight WHERE scan_id=? AND candidate_key=?",
                 (scan_id, candidate.key),
             )
+
+    def defer(self, scan_id: int, position: int) -> None:
+        """Safely settled UNKNOWN is processed, never rewritten as FAILED."""
+        with self.conn:
+            self.conn.execute(
+                "UPDATE queue SET done=1 WHERE scan_id=? AND position=?", (scan_id, position)
+            )
+            self.conn.execute(
+                "INSERT OR REPLACE INTO dispositions VALUES(?,?,?,?)",
+                (scan_id, position, "deferred", time.time()),
+            )
+
+    def retry_deferred(self, scan_id: int) -> int:
+        """Explicit retry selection only; history and original scan identity remain intact."""
+        self.scan(scan_id)
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE queue SET done=0 WHERE scan_id=? AND position IN "
+                "(SELECT position FROM dispositions WHERE scan_id=? AND status='deferred')",
+                (scan_id, scan_id),
+            )
+            self.conn.execute(
+                "UPDATE dispositions SET status='retry',updated=? WHERE scan_id=? "
+                "AND status='deferred'",
+                (time.time(), scan_id),
+            )
+            if cursor.rowcount:
+                self.conn.execute("UPDATE scans SET state='pending' WHERE id=?", (scan_id,))
+            return cursor.rowcount
+
+    def has_unresolved_dispatch(self, except_scan: int | None = None) -> bool:
+        if except_scan is None:
+            return self.conn.execute("SELECT 1 FROM in_flight LIMIT 1").fetchone() is not None
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM in_flight WHERE scan_id != ? LIMIT 1", (except_scan,)
+            ).fetchone()
+            is not None
+        )

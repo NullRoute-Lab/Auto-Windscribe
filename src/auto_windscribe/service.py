@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from .engine import Controller
 from .errors import AppError
+from .gui_manager import LinuxGUIProcesses, WindscribeGUIManager
 from .health import NetworkHealthChecker
 from .models import Candidate, Location, Profile, Status
 from .preflight import NativeInventory, Preflight, TCPTransport
@@ -76,6 +77,10 @@ def build_services(
         health=NetworkHealthChecker(runner, vpn, gate),
         preflight=Preflight(NativeInventory(), TCPTransport(gate), gate),
     )
+    if not offline and controller.health:
+        controller.gui = WindscribeGUIManager(
+            LinuxGUIProcesses(runner, gate), vpn, controller.health, gate
+        )
     return Services(
         paths,
         config,

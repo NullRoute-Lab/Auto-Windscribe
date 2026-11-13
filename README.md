@@ -1,4 +1,4 @@
-# Auto-Windscribe 0.4
+# Auto-Windscribe 0.5
 
 A terminal VPN manager and adaptive connection analyzer for **Linux Bluefin** using the existing
 `/usr/bin/windscribe-cli`. This is an unofficial controller, not a VPN client or a Windscribe product.
@@ -177,7 +177,7 @@ Uninstall retains application history and never removes Windscribe. Database sch
 back up application data before downgrading. No public endpoint IPs, personal logs or runtime data
 are committed. MIT license; original implementation with [reference acknowledgments](THIRD_PARTY_NOTICES.md).
 
-## Network recovery (v0.4)
+## Network recovery (v0.5)
 
 Baseline DNS, Google ping, Google HTTPS and independent HTTPS are checked before each native
 attempt. ICMP-only failure does not stop a usable baseline. Recovery observes native state,
@@ -229,3 +229,33 @@ after enough observations; thousands of native attempts can require many hours o
 The desktop popup cannot be suppressed through a verified supported interface. Official CLI-only
 is recommended for a separately approved evaluation; no migration has been performed. Firewall-on
 blocked baselines remain protected; no VPN-only bypass or automatic firewall change is provided.
+
+
+## v0.5: optional GUI recovery and durable deferral
+
+GUI restart recovery is off by default. Enable it in P preferences or use
+`scan --profile exhaustive --gui-restart-recovery`. Disable Auto-connect in the official GUI first.
+The controller tries ordinary settlement first; eligible native failures can then trigger one
+verified GUI-only graceful restart. It checks login, native state, firewall and actual baseline
+health before continuing to a different candidate. G / Recover GUI requests the same checks manually.
+
+**Firewall On/unknown, connected/unsettled native state, or unresolved IPC prevents restart.**
+Windscribe's shutdown can affect its firewall, so the latest firewall-On failure cannot safely be
+fixed by blindly restarting. No popup detection or suppression guarantee is claimed. No force-kill,
+helper restart, preference editing or Auto acceptance is used. Cancellation may leave the GUI closed.
+
+Settled UNKNOWN results retain their original outcome and gain a durable deferred disposition.
+Resume skips processed candidates without rebuilding the matrix. `retry-deferred ID` (Ctrl+R in the
+TUI) explicitly requeues safely deferred candidates; it does not start a connection. All history,
+scan IDs, session budgets and rankings are preserved. `results --manifest ID --offline --json`
+shows attempted, deferred, completed and remaining counts. New schema 4 migrations are additive.
+
+```bash
+auto-windscribe recover-gui --dry-run
+auto-windscribe scan --resume 6 --gui-restart-recovery
+auto-windscribe retry-deferred 6
+```
+
+Read [GUI recovery, safety prerequisites and known limitations](docs/GUI_RECOVERY.md) before enabling
+it. Desktop CLI status can reopen the GUI, so this is not a terminal-only desktop mode. The
+[official headless migration plan](docs/HEADLESS_MIGRATION.md) remains a separate, permission-gated option.

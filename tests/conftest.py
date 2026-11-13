@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from auto_windscribe import gui_manager
 from auto_windscribe.models import Candidate, Location, Profile
 from auto_windscribe.storage import Paths, Store
 
@@ -19,6 +20,8 @@ def offline_tripwire(monkeypatch, tmp_path):
     async def async_forbidden(*args, **kwargs):
         forbidden()
 
+    monkeypatch.setattr(gui_manager, "open_pidfd", forbidden)
+    monkeypatch.setattr(gui_manager, "send_termination", forbidden)
     monkeypatch.setenv("AUTO_WINDSCRIBE_OFFLINE", "1")
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", async_forbidden)

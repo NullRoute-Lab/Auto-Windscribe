@@ -67,6 +67,16 @@ def parser() -> argparse.ArgumentParser:
     locations.add_argument("--cities", action="store_true")
     locations.add_argument("--tier", choices=["all", "free", "pro", "unknown"], default="all")
     scan = sub.add_parser("scan", parents=[common], help="Plan or run a bounded sequential scan")
+    scan.add_argument(
+        "--gui-restart-recovery",
+        dest="gui_restart",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Opt in to verified GUI restart; disable Auto-connect in official GUI first",
+    )
+    scan.add_argument("--gui-restart-limit", type=int)
+    scan.add_argument("--gui-stop-timeout", type=float)
+    scan.add_argument("--gui-start-timeout", type=float)
     scan.add_argument("--auto-recover", action=argparse.BooleanOptionalAction, default=None)
     scan.add_argument("--settlement-timeout", type=float)
     scan.add_argument("--recovery-timeout", type=float)
@@ -112,6 +122,13 @@ def parser() -> argparse.ArgumentParser:
         "--interrupt", action="store_true", help="Also authorize replacing an existing connection"
     )
     sub.add_parser("disconnect", parents=[common], help="Explicitly disconnect the system VPN")
+    sub.add_parser(
+        "recover-gui", parents=[common], help="Explicit bounded GUI restart; never helpers"
+    )
+    retry = sub.add_parser(
+        "retry-deferred", parents=[common], help="Explicitly requeue settled UNKNOWN candidates"
+    )
+    retry.add_argument("scan_id", type=int)
     profiles = sub.add_parser(
         "profiles", parents=[common], help="List, show, save or delete app profiles"
     )
@@ -145,6 +162,10 @@ def scan_profile(args: argparse.Namespace, services: Services) -> Profile:
     changes = {
         field: getattr(args, arg)
         for arg, field in (
+            ("gui_restart", "gui_restart"),
+            ("gui_restart_limit", "gui_restart_limit"),
+            ("gui_stop_timeout", "gui_stop_timeout"),
+            ("gui_start_timeout", "gui_start_timeout"),
             ("auto_recover", "auto_recover"),
             ("max_recoveries", "max_recoveries"),
             ("settlement_timeout", "settlement_timeout"),
@@ -319,6 +340,43 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
                             }
                         )
                 output(rows, machine)
+    elif cmd == "recover-gui":
+        if dry or services.offline:
+            output(
+                {
+                    "action": "recover-gui",
+                    "executed": False,
+                    "requires": "verified GUI, logged-in Disconnected, firewall Off, settled IPC",
+                },
+                machine,
+            )
+        else:
+            confirm_session(
+                args,
+                services,
+                "Restart the verified Windscribe GUI and check internet? "
+                "Disable Auto-connect in the official app first. "
+                "Backend cleanup may affect connectivity. "
+                "On/unknown firewall and existing tunnels are protected.",
+            )
+            report = await services.controller.recover_gui(
+                replace(services.profile(), gui_restart=True)
+            )
+            output(asdict(report), machine)
+            return 0 if report.safe else 1
+    elif cmd == "retry-deferred":
+        if dry or services.offline:
+            output(
+                {"action": "retry-deferred", "scan_id": args.scan_id, "executed": False}, machine
+            )
+        else:
+            confirm_session(
+                args,
+                services,
+                "Requeue safely deferred UNKNOWN candidates? Original results remain.",
+            )
+            count = services.controller.retry_deferred(args.scan_id)
+            output({"scan_id": args.scan_id, "requeued": count}, machine)
     elif cmd == "disconnect":
         if dry:
             output({"action": "disconnect", "executed": False}, machine)
@@ -367,6 +425,8 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
                 row = services.store.scan(args.resume)
                 queue = [c for _, c in services.store.pending(args.resume)]
                 profile = Profile.from_dict(json.loads(row["profile"]))
+                if args.gui_restart is not None:
+                    profile = replace(profile, gui_restart=args.gui_restart)
                 scan_id = args.resume
             else:
                 profile = scan_profile(args, services)
@@ -395,7 +455,13 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
                     f"{profile.preflight_budget} transport probes, "
                     f"{profile.session_budget:g}s session? "
                     "Includes baseline probes and bounded recovery of scan-owned tunnels. "
-                    "Internet may be interrupted; existing tunnel is protected.",
+                    "Internet may be interrupted; existing tunnel is protected."
+                    + (
+                        f" GUI restart enabled (limit {profile.gui_restart_limit}); "
+                        "disable Auto-connect in the official app first."
+                        if profile.gui_restart
+                        else " GUI restart disabled."
+                    ),
                 )
                 if scan_id is None:
                     scan_id = services.store.new_scan(queue, profile)
@@ -403,7 +469,7 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
                     services.controller.emit = lambda e: console.print(
                         e.phase, e.message, markup=False
                     )
-                await services.controller.scan(scan_id, catalog)
+                await services.controller.scan(scan_id, catalog, gui_restart=profile.gui_restart)
                 row = services.store.scan(scan_id)
                 output(
                     {"scan_id": scan_id, "state": row["state"], "attempts": row["attempts"]},
