@@ -2,9 +2,10 @@
 
 
 class AppError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, timings: dict[str, float] | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.timings = timings or {}
 
 
 class SafetyError(AppError):

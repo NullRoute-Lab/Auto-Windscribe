@@ -10,7 +10,8 @@ apply the user's existing network/firewall policy.
 ## Consent and isolation
 
 - Default config disables live operations and automatic scanning.
-- Live CLI actions require saved permission **and** `--live`. TUI actions require confirmation.
+- Live actions require one interactive session confirmation or explicit `--live` for scripts.
+  There is no persistent consent prerequisite. Offline/dry-run overrides all consent.
 - `AUTO_WINDSCRIBE_OFFLINE=1` prevents all live controller/probe actions even if consent is enabled.
 - `--offline` / `--dry-run` compose an adapter that cannot invoke Windscribe.
 - `--demo` uses separate fake adapters and temporary storage, never the user's history.
@@ -20,7 +21,7 @@ apply the user's existing network/firewall policy.
 - Child command output is bounded, command deadlines are enforced, and raw stderr is not logged.
 
 The live gate prevents accidents, not a hostile user who can edit Python source or their own files.
-Do not treat a config flag as permission for an agent to ignore docs/TEST_AUTHORIZATION.md.
+Do not treat end-user application consent as permission for an agent to ignore docs/TEST_AUTHORIZATION.md.
 
 ## Data minimization
 
@@ -51,3 +52,8 @@ The optional test contacts Cloudflare and transmits up to 1 MB. It is off by def
 Report non-sensitive defects through the repository's GitHub Issues. For a vulnerability, use
 GitHub's private vulnerability reporting if enabled, or contact repository maintainers privately.
 Do not attach account tokens, keys, full Windscribe logs, or personal configuration to public issues.
+
+Transport preflight only accepts an injected trusted inventory. The shipped native inventory
+cannot establish protocol-to-address provenance and performs no probes. TCP evidence never counts
+as verified VPN connectivity. No arbitrary host/port scan input is exposed. Offline reads snapshot
+only the app database/WAL into temporary storage so even WAL read marks remain untouched.

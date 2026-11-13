@@ -80,11 +80,12 @@ async def test_explicit_interrupt(candidate, profile, store, paths):
 
 async def test_connection_timeout_leaves_state_and_pauses(candidate, profile, store, paths):
     vpn = FakeVPN(delay=10)
+    profile = replace(profile, dispatch_timeout=1)
     engine = make_controller(store, paths, vpn)
     scan_id = store.new_scan([candidate], profile)
     await engine.scan(scan_id, catalog(candidate))
     assert store.scan(scan_id)["state"] == "paused"
-    assert store.history()[0].code == "connection_timeout"
+    assert store.history()[0].code == "dispatch_timeout"
     assert store.history()[0].outcome == Outcome.UNKNOWN
     assert len(store.pending(scan_id)) == 1
     assert all(call[0] != "disconnect" for call in vpn.calls)
@@ -192,7 +193,7 @@ async def test_catalog_change_refuses_resume(candidate, profile, store, paths):
 
 async def test_live_development_gate(candidate, profile, store, paths):
     vpn = FakeVPN()
-    engine = make_controller(store, paths, vpn, gate=SafetyGate(True, True))
+    engine = make_controller(store, paths, vpn, gate=SafetyGate(confirmed=True))
     with pytest.raises(SafetyError, match="Offline mode"):
         await engine.connect(candidate, profile)
     with pytest.raises(SafetyError):

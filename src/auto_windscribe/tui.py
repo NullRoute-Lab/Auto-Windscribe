@@ -1,7 +1,8 @@
 """Keyboard-first Textual interface; all I/O runs in cancellable async workers."""
 
 import asyncio
-from dataclasses import replace
+import time
+from dataclasses import asdict, replace
 from typing import Any
 
 from textual import on, work
@@ -31,7 +32,7 @@ from .i18n import _
 from .models import PROTOCOLS, Candidate, Profile, State, Status
 from .ranking import fuzzy_score, make_queue, matches, rank_results
 from .service import Services
-from .storage import Catalog
+from .storage import Catalog, atomic_json
 
 
 class Confirm(ModalScreen[bool]):
@@ -55,7 +56,7 @@ class Confirm(ModalScreen[bool]):
                 yield Button(_("Confirm"), variant="warning", id="confirm")
 
     def on_mount(self) -> None:
-        self.query_one("#cancel", Button).focus()
+        self.query_one("#confirm", Button).focus()
 
     @on(Button.Pressed)
     def clicked(self, event: Button.Pressed) -> None:
@@ -109,6 +110,17 @@ class Preferences(ModalScreen[Profile | None]):
                     ("max_tests", "Maximum attempts, including retries", str(p.max_tests)),
                     ("timeout", "Connection timeout in seconds", str(p.timeout)),
                     ("retries", "Retries per failed candidate (0–2)", str(p.retries)),
+                    ("session_budget", "Session time budget (seconds)", str(p.session_budget)),
+                    (
+                        "preflight_concurrency",
+                        "Preflight concurrency (1–64)",
+                        str(p.preflight_concurrency),
+                    ),
+                    (
+                        "preflight_budget",
+                        "Preflight probe budget (including retries)",
+                        str(p.preflight_budget),
+                    ),
                     ("network_label", "Private network label (no SSID/IP needed)", p.network_label),
                     (
                         "settings_label",
@@ -123,7 +135,7 @@ class Preferences(ModalScreen[Profile | None]):
                     allowed = (
                         ", ".join(map(str, self.capabilities.get(proto, []))) or "not discovered"
                     )
-                    yield Label(f"{proto} ports · supported: {allowed} · blank = first")
+                    yield Label(f"{proto} ports · supported: {allowed} · blank = all supported")
                     yield Input(
                         ", ".join(map(str, p.ports.get(proto, []))), id=f"pref-ports-{proto}"
                     )
@@ -191,6 +203,9 @@ class Preferences(ModalScreen[Profile | None]):
                 max_tests=int(value("max_tests")),
                 timeout=float(value("timeout")),
                 retries=int(value("retries")),
+                session_budget=float(value("session_budget")),
+                preflight_concurrency=int(value("preflight_concurrency")),
+                preflight_budget=int(value("preflight_budget")),
                 network_label=value("network_label"),
                 settings_label=value("settings_label"),
                 mode=str(self.query_one("#pref-mode", Select).value),
@@ -229,9 +244,10 @@ class Help(ModalScreen[None]):
                     "D   Confirm system VPN disconnection\n"
                     "X   Stop work and retain the current system VPN state\n"
                     "U   Refresh the official catalog\n"
+                    "A   Toggle the startup scan offer (confirmation still required)\n"
                     "Q / Ctrl+C   Stop work, quit, retain the tunnel\n"
                     "Esc   Close a dialog or return focus to the table\n\n"
-                    "Live actions require saved consent and confirmation. A scan starts only "
+                    "Live actions require one session confirmation. A scan starts only "
                     "when disconnected. Ranking scans disconnect their own connection between "
                     "candidates; the last connection is retained. Stop/Quit never disconnect. "
                     "A pending request can still finish after cancellation.\n\n"
@@ -278,6 +294,7 @@ class WindscribeApp(App[None]):
         Binding("f", "filters", "Filters"),
         Binding("p", "preferences", "Protocols"),
         Binding("s", "profiles", "Profiles"),
+        Binding("a", "auto_scan", "Launch prompt", show=False),
         Binding("o", "sort", "Sort", show=False),
         Binding("space", "mark", "Mark", show=False),
         Binding("d", "disconnect", "Disconnect", show=False),
@@ -289,9 +306,10 @@ class WindscribeApp(App[None]):
         Binding("ctrl+c", "quit", "Quit · keep VPN", priority=True, show=False),
     ]
 
-    def __init__(self, services: Services, dry_run: bool = False) -> None:
+    def __init__(self, services: Services, dry_run: bool = False, auto_start: bool = False) -> None:
         super().__init__()
         self.services, self.dry_run = services, dry_run
+        self.auto_start = auto_start
         self.profile = services.profile()
         self.catalog_data: Catalog | None = None
         self.status_data = Status()
@@ -303,6 +321,7 @@ class WindscribeApp(App[None]):
         self.services.controller.emit = self.progress_event
         self._initialized = False
         self._status_pending = False
+        self._last_render = 0.0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -346,14 +365,18 @@ class WindscribeApp(App[None]):
             with TabPane(_("Diagnostics"), id="log-tab"):
                 yield RichLog(id="log", highlight=False, markup=False, wrap=True, max_lines=500)
         yield ProgressBar(total=1, show_eta=False, id="progress")
-        yield Static(_("Ready. Live operations are locked by default."), id="message", markup=False)
+        yield Static(
+            _("READY · Confirm a bounded Turbo scan to begin. TCP evidence is not VPN Ping."),
+            id="message",
+            markup=False,
+        )
         with Horizontal(id="actions"):
             for name, label, variant in (
                 ("connect", "Connect", "primary"),
                 ("disconnect", "Disconnect", "warning"),
                 ("scan", "Rescan", "default"),
                 ("resume", "Resume", "default"),
-                ("stop", "Stop", "default"),
+                ("stop", "Pause / Stop", "default"),
                 ("help", "Help", "default"),
             ):
                 yield Button(_(label), id=name, variant=variant)  # type: ignore[arg-type]
@@ -368,11 +391,19 @@ class WindscribeApp(App[None]):
             "Protocol",
             "Port",
             "Outcome",
-            "RTT ms",
+            "VPN Ping ms",
             "Score",
+            "Preflight",
+            "TCP ms",
         )
         self.query_one("#best", DataTable).add_columns(
-            "Requested endpoint", "Score", "Success", "RTT ms", "Loss %", "Connect s"
+            "Requested endpoint",
+            "Score",
+            "Success",
+            "VPN Ping ms",
+            "Loss %",
+            "Jitter ms",
+            "Connect s",
         )
         self.query_one("#servers", DataTable).focus()
         self._initialized = True
@@ -391,10 +422,18 @@ class WindscribeApp(App[None]):
             self.render_tables()
             if self.catalog_data.warning:
                 self.message(self.catalog_data.warning)
-            if initial and self.services.config.auto_scan and self.services.config.live_enabled:
+            if (
+                initial
+                and not self.services.offline
+                and not self.dry_run
+                and (self.services.config.auto_scan or self.auto_start)
+            ):
                 status = await self.services.vpn.status()
                 if status.state == State.DISCONNECTED and not self.dry_run:
-                    self.start_scan()
+                    if self.auto_start:
+                        self.start_scan()
+                    else:
+                        self.action_scan()
                 else:
                     self.message(
                         "Automatic scan skipped: existing/unknown connection is protected."
@@ -415,7 +454,7 @@ class WindscribeApp(App[None]):
                 if self.services.demo
                 else "OFFLINE"
                 if self.services.offline
-                else ("LIVE ENABLED" if self.services.config.live_enabled else "LIVE LOCKED")
+                else ("SCANNING" if self.operation else "READY")
             )
             self.query_one("#status", Static).update(
                 f"{mode}  │  {s.state.value.upper()}  {s.location}  {s.protocol}"
@@ -423,7 +462,7 @@ class WindscribeApp(App[None]):
             )
         except AppError as exc:
             self.status_data = Status()
-            self.query_one("#status", Static).update(f"STATUS UNKNOWN · {exc}")
+            self.query_one("#status", Static).update(f"ERROR · STATUS UNKNOWN · {exc}")
         finally:
             self._status_pending = False
 
@@ -449,7 +488,7 @@ class WindscribeApp(App[None]):
         for loc in locations:
             for proto in self.profile.protocols:
                 supported = catalog.capabilities.get(proto, [])
-                for port in self.profile.ports.get(proto, supported[:1]):
+                for port in self.profile.ports.get(proto, supported):
                     if port not in supported:
                         continue
                     c = Candidate(loc, proto, port)
@@ -461,11 +500,16 @@ class WindscribeApp(App[None]):
             rows.sort(key=lambda pair: pair[0].key)
         elif not query:
             rows.sort(key=lambda pair: positions.get(pair[0].key, len(positions)))
+        matched_count = len(rows)
+        rows = rows[:1000]  # Bound widget work; filters/search access the full inventory.
         for c, r in rows:
             metric = r.verified.metrics.rtt_ms if r and r.verified else None
-            outcome = r.latest.code if r else "untested"
+            outcome = self.services.controller.candidate_states.get(
+                c.key, r.latest.state_label if r else "untested"
+            )
             if not c.location.available:
                 outcome = "unavailable"
+            evidence = self.services.controller.evidence.get(c.key)
             table.add_row(
                 "●" if c.key in self.marked else "",
                 c.location.region,
@@ -476,9 +520,11 @@ class WindscribeApp(App[None]):
                 outcome,
                 f"{metric:.1f}" if metric is not None else "—",
                 str(r.score) if r else "—",
+                evidence.state.value if evidence else "untested",
+                f"{evidence.tcp_ms:.1f}" if evidence and evidence.tcp_ms is not None else "—",
                 key=c.key,
             )
-        if selected_key in self.candidates:
+        if any(c.key == selected_key for c, _ in rows):
             table.move_cursor(row=next(i for i, (c, _) in enumerate(rows) if c.key == selected_key))
         best = self.query_one("#best", DataTable)
         best.clear()
@@ -496,12 +542,15 @@ class WindscribeApp(App[None]):
                 f"{r.successes}/{r.attempts}",
                 fmt(m.rtt_ms),
                 fmt(m.loss_pct),
+                fmt(m.jitter_ms),
                 fmt(r.verified.connect_s),
                 key=r.candidate.key,
             )
         self.query_one("#overview", Static).update(
-            f"{len(catalog.locations)} locations · {len(catalog.capabilities)} protocols · "
-            f"{len(rows)} combinations shown · {len(self.marked)} marked · "
+            f"{len(catalog.locations)} locations · "
+            + " / ".join(f"{p}:{len(ports)} ports" for p, ports in catalog.capabilities.items())
+            + " · "
+            f"{len(rows)}/{matched_count} combinations shown · {len(self.marked)} marked · "
             f"catalog {'OUTDATED' if catalog.stale else 'known'} · profile: {self.profile.name}"
         )
 
@@ -524,6 +573,10 @@ class WindscribeApp(App[None]):
 
     @on(Select.Changed, "#profile")
     def profile_changed(self, event: Select.Changed) -> None:
+        if self.operation and str(event.value) != self.profile.name:
+            self.message("Pause before changing profile; the active scan keeps its saved profile.")
+            self.query_one("#profile", Select).value = self.profile.name
+            return
         if self._initialized and event.value != Select.BLANK:
             self.profile = self.services.profile(str(event.value))
             self.marked.clear()
@@ -539,7 +592,8 @@ class WindscribeApp(App[None]):
         key = str(event.row_key.value)
         row = self.history_rows.get(key)
         self.query_one("#details", Static).update(
-            f"{key}\n{row.latest.code}: {row.latest.detail}"
+            f"{key}\n{row.latest.phase} / {row.latest.code}: {row.latest.detail}\n"
+            f"Times: {row.latest.timings} · States: {', '.join(row.latest.observations)}"
             if row
             else f"{key}\nUntested; quality is unknown."
         )
@@ -572,10 +626,8 @@ class WindscribeApp(App[None]):
             return False
         if self.dry_run:
             return True
-        try:
-            self.services.controller.gate.require_live()
-        except AppError as exc:
-            self.message(str(exc))
+        if self.services.offline and not self.services.demo:
+            self.message("OFFLINE · Browsing only; no connection or probes.")
             return False
         return True
 
@@ -618,7 +670,7 @@ class WindscribeApp(App[None]):
             self.marked or None,
         )
         if self.marked:
-            queue = [c for c in queue if c.key in self.marked][: self.profile.max_tests]
+            queue = [c for c in queue if c.key in self.marked]
         return queue
 
     def action_scan(self) -> None:
@@ -638,7 +690,10 @@ class WindscribeApp(App[None]):
         self.push_screen(
             Confirm(
                 f"Scan up to {self.profile.max_tests} attempts across {len(queue)} "
-                f"combinations in {self.profile.mode} mode? Internet may be interrupted. "
+                f"combinations in {self.profile.strategy} mode, up to "
+                f"{self.profile.preflight_budget} "
+                f"transport probes, {self.profile.session_budget:g}s budget? Internet may "
+                f"be interrupted. "
                 "Only start while disconnected. Stop/Quit retain the current VPN state."
             ),
             lambda yes: self.start_scan(queue) if yes else None,
@@ -662,7 +717,7 @@ class WindscribeApp(App[None]):
         scans = [
             row
             for row in self.services.store.scans()
-            if row["state"] in ("paused", "pending", "running")
+            if row["state"] in ("paused", "pending", "running", "limited")
         ]
         if not scans:
             self.message("No paused scan to resume. Use Rescan for a fresh attempt budget.")
@@ -673,7 +728,7 @@ class WindscribeApp(App[None]):
             return
         self.push_screen(
             Confirm(
-                f"Resume scan {scan_id} with its saved profile and remaining attempt "
+                f"Resume scan {scan_id} with its saved profile and a new bounded session "
                 "budget? Start disconnected; internet may be interrupted."
             ),
             lambda yes: self.launch("scan", scan_id) if yes else None,
@@ -696,6 +751,7 @@ class WindscribeApp(App[None]):
     def launch(self, kind: str, value: Any = None) -> None:
         if self.operation:
             return
+        self.services.controller.gate.confirmed = True
         self.operation = True
         self.run_worker(self.operate(kind, value), group="operation", exit_on_error=False)
 
@@ -716,16 +772,31 @@ class WindscribeApp(App[None]):
             self.message(str(exc))
         finally:
             self.operation = False
+            self.services.controller.gate.confirmed = False
             self.render_tables()
             self.refresh_status()
 
     def progress_event(self, event: Progress) -> None:
         self.message(f"{event.phase}: {event.message}")
+        if event.result:
+            self.query_one("#log", RichLog).write(
+                f"{event.result.phase} / {event.result.code} · {event.result.timings} · "
+                + ", ".join(event.result.observations)
+            )
         if event.total:
             self.query_one("#progress", ProgressBar).update(
                 total=event.total, progress=event.completed
             )
-        if event.result:
+        if event.eta_s is not None:
+            self.query_one("#message", Static).update(
+                f"{event.phase} · session ETA ≈ {event.eta_s:.0f}s (observed pace)"
+            )
+        if (
+            event.phase.startswith("VPN ")
+            or event.result
+            or (event.evidence and time.monotonic() - self._last_render > 0.25)
+        ):
+            self._last_render = time.monotonic()
             self.render_tables()
 
     def action_stop(self) -> None:
@@ -797,3 +868,15 @@ class WindscribeApp(App[None]):
 
     def action_help(self) -> None:
         self.push_screen(Help())
+
+    def action_auto_scan(self) -> None:
+        if self.services.offline or self.dry_run or self.operation:
+            self.message("Launch preference is unavailable during offline browsing or active work.")
+            return
+        self.services.config.auto_scan = not self.services.config.auto_scan
+        atomic_json(self.services.paths.config / "config.json", asdict(self.services.config))
+        self.message(
+            "Offer Turbo on launch: "
+            + str(self.services.config.auto_scan)
+            + ". A session confirmation is always required."
+        )

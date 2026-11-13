@@ -102,6 +102,7 @@ class Metrics:
     https_ok: bool | None = None
     download_mbps: float | None = None
     note: str = ""
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 class Outcome(StrEnum):
@@ -121,6 +122,21 @@ class Result:
     metrics: Metrics = field(default_factory=Metrics)
     timestamp: float = field(default_factory=time.time)
     context: str = "default"
+    phase: str = "unknown"
+    timings: dict[str, float] = field(default_factory=dict)
+    observations: list[str] = field(default_factory=list)
+
+    @property
+    def state_label(self) -> str:
+        if self.outcome == Outcome.SUCCESS:
+            return "VPN verified"
+        if self.outcome == Outcome.CANCELLED:
+            return "cancelled"
+        if "timeout" in self.code:
+            return "timed out"
+        if self.connect_s is not None:
+            return "VPN connected but unverified"
+        return "failed" if self.outcome == Outcome.FAILED else "unknown"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Result":
@@ -154,6 +170,18 @@ class Profile:
     download: bool = False
     network_label: str = "default"
     settings_label: str = "gui-unchanged"
+    strategy: str = "turbo"
+    dispatch_timeout: float = 10.0
+    status_timeout: float = 10.0
+    validation_timeout: float = 5.0
+    https_timeout: float = 12.0
+    session_budget: float = 300.0
+    preflight_concurrency: int = 16
+    preflight_timeout: float = 1.5
+    preflight_budget: int = 96
+    preflight_rate: float = 20.0
+    preflight_retries: int = 1
+    preflight_deadline: float = 30.0
 
     def validate(self) -> "Profile":
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,48}", self.name):
@@ -183,6 +211,17 @@ class Profile:
             ):
                 raise ValueError(f"{key} must be a list of short names")
         bounds = {
+            "dispatch_timeout": (1, 60),
+            "status_timeout": (1, 30),
+            "validation_timeout": (1, 30),
+            "https_timeout": (1, 60),
+            "session_budget": (10, 86400),
+            "preflight_concurrency": (1, 64),
+            "preflight_timeout": (0.1, 10),
+            "preflight_budget": (0, 10000),
+            "preflight_rate": (1, 100),
+            "preflight_retries": (0, 2),
+            "preflight_deadline": (1, 300),
             "max_tests": (1, 500),
             "timeout": (3, 300),
             "settle": (0, 30),
@@ -195,11 +234,20 @@ class Profile:
             value = getattr(self, key)
             if type(value) not in (int, float) or not low <= value <= high:
                 raise ValueError(f"{key} must be between {low} and {high}")
-        for key in ("max_tests", "retries", "ping_count"):
+        for key in (
+            "max_tests",
+            "retries",
+            "ping_count",
+            "preflight_concurrency",
+            "preflight_budget",
+            "preflight_retries",
+        ):
             if type(getattr(self, key)) is not int:
                 raise ValueError(f"{key} must be an integer")
         if self.mode not in ("first-success", "rank", "fast"):
             raise ValueError("Mode must be first-success, rank, or fast")
+        if self.strategy not in ("turbo", "balanced", "exhaustive"):
+            raise ValueError("Strategy must be turbo, balanced, or exhaustive")
         if self.tier not in ("all", "free", "pro", "unknown"):
             raise ValueError("Invalid account tier filter")
         if type(self.download) is not bool:
@@ -217,9 +265,7 @@ class Profile:
             self.settings_label,
             self.ping_count,
             self.download,
-            self.timeout,
-            self.settle,
-            "probe-v1",
+            "probe-v2",
         ]
         return sha256(json.dumps(data).encode()).hexdigest()[:20]
 
@@ -233,6 +279,24 @@ class Profile:
 
 def builtin_profiles() -> dict[str, Profile]:
     return {
+        "turbo": Profile(name="turbo", timeout=20, settle=1, max_tests=12),
+        "balanced": Profile(
+            name="balanced",
+            strategy="balanced",
+            mode="rank",
+            max_tests=36,
+            timeout=30,
+            session_budget=1200,
+            preflight_budget=256,
+        ),
+        "exhaustive": Profile(
+            name="exhaustive",
+            strategy="exhaustive",
+            mode="rank",
+            max_tests=100,
+            session_budget=3600,
+            preflight_budget=512,
+        ),
         "default": Profile(),
         "restrictive": Profile(
             name="restrictive",

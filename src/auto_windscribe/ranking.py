@@ -137,7 +137,7 @@ def make_queue(
             raise AppError(
                 "protocol_unavailable", f"{proto} is not in the discovered capabilities."
             )
-        ports = profile.ports.get(proto, supported[:1])
+        ports = profile.ports.get(proto, supported)
         if any(port not in supported for port in ports):
             raise AppError("unsupported_port", f"Unsupported {proto} port; CLI fallback refused.")
         selected_ports[proto] = list(dict.fromkeys(ports))
@@ -151,24 +151,63 @@ def make_queue(
     ]
     if selected is not None:
         queue = [c for c in queue if c.key in selected]
-    contextual = [r for r in history if r.context == profile.context]
-    ranking = {row.candidate.key: row for row in rank_results(contextual)}
+    # Inventory is complete; attempt/time limits apply to each confirmed session.
+    return queue
+
+
+def adaptive_order(
+    candidates: list[Candidate],
+    profile: Profile,
+    history: list[Result],
+    evidence: dict | None = None,
+    attempted: list[Candidate] | None = None,
+    limit: int | None = None,
+) -> list[Candidate]:
+    """Greedy diversity with bounded history/preflight bonuses; never excludes alternatives."""
+    evidence = evidence or {}
+    used = list(attempted or [])
+    ranked = {
+        r.candidate.key: r
+        for r in rank_results([r for r in history if r.context == profile.context])
+    }
+    remaining = list(candidates)
+    ordered: list[Candidate] = []
     now = time.time()
-    queue = [
-        c
-        for c in queue
-        if not (
-            c.key in ranking
-            and ranking[c.key].latest.outcome == Outcome.FAILED
-            and now - ranking[c.key].latest.timestamp < profile.cooldown
-        )
-    ]
-    # Reserve exploration as well as prioritizing known successes; retain protocol preference order.
-    successes = sorted(
-        (c for c in queue if c.key in ranking and ranking[c.key].verified),
-        key=lambda c: -ranking[c.key].score,
-    )
-    fresh = [c for c in queue if c not in successes]
-    limit = min(profile.max_tests, 5) if profile.mode == "fast" else profile.max_tests
-    n = min(len(successes), max(1, limit // 2)) if fresh else limit
-    return (successes[:n] + fresh + successes[n:])[:limit]
+    while remaining and (limit is None or len(ordered) < limit):
+        protocols = {c.protocol for c in used}
+        countries = {c.location.country or c.location.region for c in used}
+        locations = {c.location.key for c in used}
+        ports = {(c.protocol, c.port) for c in used}
+
+        def score(
+            c: Candidate,
+            protocols: set[str] = protocols,
+            countries: set[str] = countries,
+            locations: set[str] = locations,
+            ports: set[tuple[str, int]] = ports,
+        ) -> float:
+            row = ranked.get(c.key)
+            value = 30.0 if c.protocol not in protocols else 0
+            value += 20 if (c.location.country or c.location.region) not in countries else 0
+            value += 12 if c.location.key not in locations else 0
+            value += 8 if (c.protocol, c.port) not in ports else 0
+            # Every third pick reserves exploration even if many historical successes exist.
+            explore = len(used) % 3 == 2
+            if row and row.verified:
+                value += 0 if explore else 35 * row.score / 100
+            if row and row.latest.outcome == Outcome.FAILED:
+                if now - row.latest.timestamp < profile.cooldown:
+                    value -= 35
+            observation = evidence.get(c.key)
+            if observation and now - observation.timestamp <= 300:
+                value += 8 if observation.state == "preflight reachable" else 0
+                value -= 8 if observation.state == "preflight failed" else 0
+            if explore and row is None:
+                value += 40
+            return value
+
+        chosen = max(remaining, key=score)
+        remaining.remove(chosen)
+        ordered.append(chosen)
+        used.append(chosen)
+    return ordered

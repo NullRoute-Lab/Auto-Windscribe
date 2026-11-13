@@ -6,7 +6,7 @@ import pytest
 
 from auto_windscribe.errors import AppError
 from auto_windscribe.models import Metrics, Outcome, Profile, Result
-from auto_windscribe.ranking import fuzzy_score, make_queue, matches, rank_results
+from auto_windscribe.ranking import adaptive_order, fuzzy_score, make_queue, matches, rank_results
 from auto_windscribe.service import refresh_catalog
 from auto_windscribe.storage import Catalog, Config, Profiles, Store
 from tests.fakes import FakeVPN
@@ -108,10 +108,10 @@ def test_profiles_roundtrip_and_reject_unknown(paths, profile):
         Profile.from_dict({"password": "not-allowed"})
 
 
-def test_invalid_consent_is_fail_closed(paths):
-    (paths.config / "config.json").write_text('{"live_enabled": "true"}')
-    with pytest.raises(AppError):
-        Config.load(paths)
+def test_legacy_consent_is_ignored(paths):
+    (paths.config / "config.json").write_text('{"live_enabled": false}')
+    assert Config.load(paths).default_profile == "turbo"
+    assert not hasattr(Config.load(paths), "live_enabled")
 
 
 def test_fuzzy_search_and_filters(candidate):
@@ -127,11 +127,12 @@ def test_queue_dynamic_ports_diversity_limits_and_cooldown(candidate, profile):
     cat = Catalog([candidate.location, second], {"stealth": [443, 80], "udp": [53]}, time.time())
     p = replace(profile, protocols=["stealth", "udp"], max_tests=3)
     queue = make_queue(cat, p, [])
-    assert len(queue) == 3
+    assert len(queue) == 6
     assert queue[0].protocol == "stealth" and queue[1].protocol == "udp"
     assert queue[1].port == 53
     failure = Result(queue[0], Outcome.FAILED, "failed", "Simulated", context=p.context)
-    assert queue[0] not in make_queue(cat, p, [failure])
+    assert queue[0] in make_queue(cat, p, [failure])
+    assert adaptive_order(queue, p, [failure])[0] != queue[0]
     failure.context = "different-network"
     assert queue[0] in make_queue(cat, p, [failure])
     p.ports = {"udp": [443]}

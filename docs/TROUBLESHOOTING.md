@@ -6,7 +6,7 @@ Use `doctor --offline` to avoid even native CLI calls.
 
 | Diagnostic | Meaning / next step |
 | --- | --- |
-| `authorization_required` | App consent or explicit action consent is missing. Leave locked until the separately authorized testing phase |
+| `authorization_required` | Confirm the interactive session, or use --live for scripting; no config switch is needed |
 | `offline_guard` | `--offline`, dry-run or `AUTO_WINDSCRIBE_OFFLINE=1` prohibits live operations |
 | `cli_missing` | Existing `/usr/bin/windscribe-cli` was not found; inspect the installation without replacing packages automatically |
 | `catalog_unavailable` | No valid cached catalog; use read-only `locations` to refresh through the existing native client |
@@ -51,3 +51,21 @@ widths. Tab/Shift+Tab move focus between controls. Escape returns focus to the s
 Search uses fuzzy matching; short terms may also match similar nicknames. Use structured country,
 city or nickname filters for exact selection. English UI is supported; gettext message boundaries
 are in place for future Persian translation. Persian documentation is provided now.
+
+## v0.2 phase diagnostics
+
+- `dispatch_timeout` / `ipc_timeout`: request dispatch or serialized CLI work exceeded its budget.
+  The request may have reached the official app; inspect native status before another action.
+- `status_timeout`: a bounded status poll failed to finish. This is not evidence of a VPN handshake failure.
+- `connection_timeout`: no connected state observed before the establishment deadline. See saved
+  state labels. Connecting means uncertain and paused; positively disconnected can continue.
+- `validation_timeout` / `tunnel_unverified`: route/device validation failed; no probe was sent.
+- `https_timeout` / `https_failed`: connected-state verification failed, not necessarily tunnel negotiation.
+- `endpoint_unavailable`: expected on CLI 2.25.8; trusted protocol-address metadata is unavailable.
+  Turbo skips TCP preflight and uses native verification; there is nothing to unlock or install.
+- `tcp_only`: temporary endpoint transport evidence, never a verified VPN result.
+
+A single WStunnel:443 timeout cannot establish censorship. Do not disable the firewall or restart
+helpers as automatic recovery. Compare phase records, use read-only doctor/status, and change
+GUI-only preferences manually if desired. Change the application settings label after such a change.
+See [the failed-test analysis](TURBO.md). Stop/Quit may leave a native request still finishing.

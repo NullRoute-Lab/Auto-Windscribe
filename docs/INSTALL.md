@@ -47,10 +47,12 @@ metrics; the app will not install host packages. curl must support `--interface 
 
 ## Storage and permission
 
-Configuration, data and cache follow XDG defaults. An empty install creates no consent file;
-missing configuration means `live_enabled=false`, `auto_scan=false`. Copy `examples/config.json`
-only when configuring your installation. It also defaults to locked. The explicit live testing
-checkpoint is documented separately in TEST_AUTHORIZATION.md.
+Configuration, data and cache follow XDG defaults. No config file is required: defaults are
+Turbo and a launch scan offer with one interactive confirmation. `--live` supplies explicit
+consent for scripts; there is no persistent permission switch. Old `live_enabled` fields are
+ignored. `auto_scan=false` suppresses the launch offer; the TUI's A key toggles this preference.
+Installation never launches a scan. Development-agent test authorization is documented separately
+in TEST_AUTHORIZATION.md and is not a product lock.
 
 ## Upgrade
 

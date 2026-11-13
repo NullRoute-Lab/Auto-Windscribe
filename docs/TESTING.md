@@ -40,3 +40,16 @@ No live test is runnable through the normal suite. The pytest `live` marker is r
 future separately authorized suite, which must not be included in offline CI. A future live phase
 must first obtain explicit permission, define the single operation to test and report its effects.
 Build or push permission is never live-test permission.
+
+## v0.2 coverage and benchmarking
+
+The suite now covers bounded preflight concurrency, duplicate endpoints, DNS cache single-flight,
+private/stale address refusal, retry/rate/total budgets, cancellation, partial failures, UDP
+uncertainty, TCP-only evidence, adaptive diversity/history, per-phase deadlines, in-flight slow
+status polls, native serialization, durable Exhaustive resume, non-mutating offline history,
+legacy config migration, and one-Enter startup with fake adapters and no persistent lock.
+
+Run `uv run python -m benchmarks.preflight` for the standalone synthetic benchmark. It has its
+own network/process tripwires. Do not substitute real endpoints. See TURBO.md and benchmark-v0.2.json.
+The CI matrix runs Python 3.12 and 3.14; lint, format, types, tests, build and package-content checks
+remain offline with respect to VPN operations. Dependency downloads and GitHub access are allowed.

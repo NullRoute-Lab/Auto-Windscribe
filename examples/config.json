@@ -1,6 +1,5 @@
 {
-  "live_enabled": false,
-  "auto_scan": false,
-  "default_profile": "default",
+  "auto_scan": true,
+  "default_profile": "turbo",
   "catalog_ttl": 86400
 }

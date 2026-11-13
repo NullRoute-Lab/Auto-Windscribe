@@ -1,37 +1,34 @@
-# Development validation record
+# v0.2 offline validation
 
-Date: November 13, 2026. Scope: implementation and offline validation only.
-
-This is the initial development record, before the separately authorized live
-test phase. Current authorization status is in TEST_AUTHORIZATION.md; private
-runtime observations are not published in this record.
+November 13, 2026. This upgrade used injected fake VPN, subprocess, DNS and TCP adapters.
+No real preflight, VPN connection/disconnection, ping or HTTPS reachability test was run during
+this development session. The earlier single authorized WStunnel test belongs to v0.1 and its
+permission is consumed; [TURBO.md](TURBO.md) explains what its timeout does and does not prove.
 
 | Check | Result |
 | --- | --- |
-| Python 3.12.12 | 115 tests passed |
-| Host Python 3.14.10 | 115 tests passed |
-| Coverage (statements and branches) | 84.48% |
-| Ruff lint / formatting | Passed |
-| mypy | Passed across 17 source modules |
-| Package build | Wheel and source distribution built successfully |
-| Archive audit | No reference trees, runtime databases, venvs or temporary check logs |
-| Textual Pilot | Search, selection, profile editing, confirmation, scan cancellation and quit retention passed |
-| Demo screenshot | Generated from synthetic adapters and temporary storage |
-| Native read-only inspection | CLI help, version, status, locations, protocol ports and preset names |
-| GitHub credentials | Authenticated account had repository write access |
-| Reference cleanup | Only the two named extracted reference trees were removed after path verification |
+| Python 3.12.12 | 142 offline tests passed |
+| Python 3.14.10 | 142 offline tests passed |
+| Ruff lint / format | Passed for source, tests, benchmarks and packaging scripts |
+| mypy | Passed across 18 application modules |
+| Package build | Wheel and source archive built; archive contents audited |
+| Textual Pilot | One-Enter startup confirmation, no LIVE LOCKED header, search/filter/profile editing, cancellation, existing-connection protection and quit retention |
+| Runtime data safety | Offline/dry-run no persistent writes; database/WAL bytes unchanged by offline snapshot reads |
+| Preflight | Bounds, rate/retry/probe budgets, DNS caching, socket cleanup, partial failures, unknown UDP, stale/private metadata refusal |
+| Native controller | Serialized commands, separate phase deadlines, slow-poll handling, conflicts, sequential attempts, resume and retained tunnel |
+| Mock benchmark | 3.206851 s sequential / 0.414847 s bounded concurrent; 7.730×, no network operations |
 
-All tests used fake subprocess/probe backends; the suite rejects real subprocess creation, socket
-connections and DNS lookups. The synthetic demo has no native adapter and never persists into the
-user's real history. The app was installed at the user level with no startup hooks. Only help,
-version, read-only status/capability/catalog inspection and cache-only planning were used against
-the installed executable.
+Coverage: 85% rounded, including branches. Raw coverage artifacts remain local and ignored.
+Benchmark raw synthetic measurements are published in benchmark-v0.2.json; timing thresholds are
+not CI assertions. Official CLI help/catalog and public upstream sources were inspected read-only.
+The app's prior failed-test record was inspected without publishing private runtime data.
 
-No `windscribe-cli connect` or `disconnect` operation, VPN handshake, live ping, HTTPS reachability
-probe, bandwidth test, firewall change, preference modification, system deployment change or
-service restart was performed. The prior failed Stealth test was not repeated. Live operation
-permission remains disabled, pending the separate explicit authorization checkpoint.
+The user-level executable is updated using the built wheel. Verification uses version/help,
+strictly offline commands, and synthetic Textual tests; installation has no runtime hooks.
+GitHub's offline matrix runs on Python 3.12 and 3.14 after push. The exact final commit and remote
+CI outcome are reported at handoff, since a commit cannot embed its own hash.
 
-This record does not certify live tunnel performance. Native connected-state behavior, city-only
-identity limits, tunnel interface recognition and probe reachability remain subject to a future
-authorized real test. Git commit and remote verification are reported separately at handoff.
+Known limits: no trustworthy native endpoint export for TCP preflight; no successful live tunnel
+certified; native status can expose only city-level identity; GUI-only advanced preferences remain
+unobservable/unchanged; IPv6/DNS-leak certification and parallel proxy/namespace tunnels are outside
+this release. No host packages, routes, DNS, firewall, GUI preferences or helper services changed.

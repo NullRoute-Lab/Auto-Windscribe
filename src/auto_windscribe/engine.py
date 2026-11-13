@@ -4,11 +4,13 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .errors import AppError, SafetyError
 from .models import Candidate, Metrics, Outcome, Profile, Result, State, Status
+from .preflight import Evidence, Preflight
 from .probes import Probe
+from .ranking import adaptive_order, rank_results
 from .safety import OperationLock, SafetyGate
 from .storage import Catalog, Store
 from .windscribe import VPN
@@ -21,6 +23,8 @@ class Progress:
     total: int = 0
     message: str = ""
     result: Result | None = None
+    evidence: Evidence | None = None
+    eta_s: float | None = None
 
 
 def owns(status: Status, candidate: Candidate) -> bool:
@@ -48,10 +52,14 @@ class Controller:
         lock: OperationLock,
         gate: SafetyGate,
         poll_interval: float = 0.5,
+        preflight: Preflight | None = None,
     ) -> None:
         self.vpn, self.probe, self.store = vpn, probe, store
         self.lock, self.gate = lock, gate
         self.poll_interval = poll_interval
+        self.preflight = preflight
+        self.evidence: dict[str, Evidence] = {}
+        self.candidate_states: dict[str, str] = {}
         self.task: asyncio.Task | None = None
         self.owned: Candidate | None = None
         self.emit: Callable[[Progress], None] = lambda event: None
@@ -139,77 +147,128 @@ class Controller:
     async def _attempt(self, candidate: Candidate, profile: Profile) -> Result:
         await self._disconnected()
         self.owned = None
-        self.emit(Progress("connecting", message=candidate.key))
-        started = time.monotonic()
+        self.candidate_states[candidate.key] = "VPN connecting"
+        self.emit(Progress("VPN connecting", message=candidate.key))
+        phase = "preparation"
+        timings: dict[str, float] = {}
+        observations: list[str] = []
         connected_s = None
+        phase_started = time.monotonic()
+
+        def result(
+            outcome: Outcome, code: str, detail: str, metrics: Metrics | None = None
+        ) -> Result:
+            timings.setdefault(phase, time.monotonic() - phase_started)
+            observation = Result(
+                candidate,
+                outcome,
+                code,
+                detail,
+                connected_s,
+                metrics or Metrics(),
+                context=profile.context,
+                phase=phase,
+                timings=timings,
+                observations=observations,
+            )
+            self.candidate_states[candidate.key] = observation.state_label
+            return observation
+
         try:
-            async with asyncio.timeout(profile.timeout):
-                dispatched = await self.vpn.connect(candidate)
-                started = dispatched if dispatched is not None else started
-                saw_connecting = False
-                while True:
-                    status = await self.vpn.status()
-                    if status.state == State.CONNECTED:
-                        if not owns(status, candidate):
-                            raise SafetyError(
-                                "state_conflict",
-                                "Connected endpoint/protocol/port "
-                                "does not match the request. No success recorded.",
-                            )
-                        connected_s = time.monotonic() - started
-                        self.owned = candidate
-                        break
-                    if status.state == State.CONNECTING:
-                        saw_connecting = True
-                    elif status.state == State.DISCONNECTED:
-                        if status.diagnostic or saw_connecting or time.monotonic() - started >= 2:
-                            return Result(
-                                candidate,
-                                Outcome.FAILED,
-                                status.diagnostic or "connection_failed",
-                                "Request was accepted but no tunnel was established. "
-                                "Protocol filtering or server failure may be involved.",
-                                context=profile.context,
-                            )
-                    else:
+            prepare = getattr(self.vpn, "prepare", None)
+            if prepare is not None:
+                async with asyncio.timeout(90):
+                    await prepare(candidate)
+            timings[phase] = time.monotonic() - phase_started
+            phase, phase_started = "dispatch", time.monotonic()
+            async with asyncio.timeout(profile.dispatch_timeout):
+                await self.vpn.connect(candidate)
+            timings[phase] = time.monotonic() - phase_started
+            # The establishment clock starts after IPC dispatch, not catalog discovery.
+            phase, phase_started = "establishment", time.monotonic()
+            deadline = phase_started + profile.timeout
+            saw_connecting = False
+            while True:
+                # Finish each bounded poll. A slow poll is not a native connection timeout.
+                try:
+                    async with asyncio.timeout(profile.status_timeout):
+                        status = await self.vpn.status()
+                except TimeoutError:
+                    return result(
+                        Outcome.UNKNOWN,
+                        "status_timeout",
+                        "Status poll deadline expired; native state is unknown. Scan paused.",
+                    )
+                observation = status.state.value + (
+                    ":" + status.diagnostic if status.diagnostic else ""
+                )
+                if not observations or observations[-1] != observation:
+                    observations.append(observation)
+                    observations[:] = observations[-32:]
+                if status.state == State.CONNECTED:
+                    if not owns(status, candidate):
                         raise SafetyError(
-                            "state_conflict", "Unexpected connection state; scan paused."
+                            "state_conflict", "Connected endpoint does not match; scan paused."
                         )
-                    await asyncio.sleep(self.poll_interval)
+                    connected_s = time.monotonic() - phase_started
+                    self.owned = candidate
+                    break
+                if status.state == State.CONNECTING:
+                    saw_connecting = True
+                elif status.state == State.DISCONNECTED:
+                    if status.diagnostic or saw_connecting:
+                        return result(
+                            Outcome.FAILED,
+                            status.diagnostic or "connection_failed",
+                            "Native CLI reported failure or returned from connecting to "
+                            "disconnected. Cause unknown unless identified by its diagnostic.",
+                        )
+                else:
+                    raise SafetyError("state_conflict", "Unexpected native state; scan paused.")
+                if time.monotonic() >= deadline:
+                    # Only a positively disconnected state permits another candidate.
+                    return result(
+                        Outcome.FAILED if status.state == State.DISCONNECTED else Outcome.UNKNOWN,
+                        "connection_timeout",
+                        "Application establishment deadline expired. "
+                        "No transport cause is proven. Last observed state: " + status.state.value,
+                    )
+                await asyncio.sleep(min(self.poll_interval, max(0, deadline - time.monotonic())))
+            timings[phase] = time.monotonic() - phase_started
+            phase, phase_started = "validation", time.monotonic()
+            self.candidate_states[candidate.key] = "VPN connected but unverified"
+            self.emit(Progress("VPN connected but unverified", message=candidate.key))
             await asyncio.sleep(profile.settle)
             if not owns(await self.vpn.status(), candidate):
                 raise SafetyError("state_conflict", "Tunnel changed while settling; scan paused.")
-            self.emit(Progress("verifying", message=candidate.key))
+            # Probe applies separate route-validation and HTTPS deadlines, then optional quality.
             metrics = await self._quality(candidate, profile)
-            success = metrics.https_ok is True
-            return Result(
-                candidate,
-                Outcome.SUCCESS if success else Outcome.FAILED,
-                "verified" if success else "https_failed",
-                "CLI city/protocol/port and tunnel-bound HTTPS verified. "
-                "Nickname is the requested endpoint; CLI may expose only the city."
-                if success
-                else "CLI connected, but tunnel-bound HTTPS did not succeed. "
-                "This does not by itself identify the cause.",
-                connected_s,
+            timings.update(metrics.timings)
+            phase = "verification"
+            return result(
+                Outcome.SUCCESS if metrics.https_ok is True else Outcome.FAILED,
+                "verified" if metrics.https_ok is True else "https_failed",
+                "Native city/protocol/port and tunnel-bound HTTPS verified; nickname "
+                "remains requested, not observable."
+                if metrics.https_ok is True
+                else "Native connected, but HTTPS verification failed. Cause is not established.",
                 metrics,
-                context=profile.context,
             )
         except TimeoutError:
-            return Result(
-                candidate,
+            return result(
                 Outcome.UNKNOWN,
-                "connection_timeout",
-                "Connection deadline expired. The system may still be connecting; "
-                "no automatic cleanup or retry. Inspect status.",
-                context=profile.context,
+                phase + "_timeout",
+                "Phase deadline expired; scan paused without disconnecting.",
             )
         except SafetyError:
             raise
         except AppError as exc:
-            return Result(
-                candidate, Outcome.UNKNOWN, exc.code, str(exc), connected_s, context=profile.context
-            )
+            timings.update(exc.timings)
+            if exc.code.startswith("https"):
+                phase = "https"
+            elif exc.code.startswith(("validation", "tunnel_")):
+                phase = "validation"
+            return result(Outcome.UNKNOWN, exc.code, str(exc))
 
     async def connect(
         self, candidate: Candidate, profile: Profile, interrupt: bool = False
@@ -222,9 +281,11 @@ class Controller:
                 if interrupt:
                     await self._disconnect()
                 result = await self._attempt(candidate, profile)
+                self.candidate_states[candidate.key] = result.state_label
                 self.store.record(result)
                 return result
             except asyncio.CancelledError:
+                self.candidate_states[candidate.key] = "cancelled"
                 self.store.record(
                     Result(
                         candidate,
@@ -243,7 +304,14 @@ class Controller:
         with self.lock.hold():
             self.task = asyncio.current_task()
             try:
-                await self._scan(scan_id, catalog)
+                profile = Profile.from_dict(json.loads(self.store.scan(scan_id)["profile"]))
+                async with asyncio.timeout(profile.session_budget):
+                    await self._scan(scan_id, catalog)
+            except TimeoutError:
+                self.store.set_state(scan_id, "paused")
+                self.emit(
+                    Progress("paused", message="Session budget reached; current VPN retained.")
+                )
             except asyncio.CancelledError:
                 self.store.set_state(scan_id, "paused")
                 raise
@@ -270,19 +338,79 @@ class Controller:
                 )
         self.task = asyncio.current_task()
         self.store.set_state(scan_id, "running")
-        attempts = row["attempts"]
+        attempts = 0  # Budget is per explicitly confirmed session, including resumes.
+        session_started = time.monotonic()
+        attempted: list[Candidate] = []
+        durations: list[float] = []
+        if self.preflight is not None:
+            shortlist = await asyncio.to_thread(
+                adaptive_order,
+                [c for _, c in pending],
+                profile,
+                self.store.history(profile.context),
+                limit=profile.preflight_budget,
+            )
+            self.emit(
+                Progress(
+                    "preflight",
+                    total=len(shortlist),
+                    message=f"Concurrency {profile.preflight_concurrency}; "
+                    "TCP evidence is not VPN Ping. "
+                    + getattr(self.preflight.inventory, "reason", ""),
+                )
+            )
+
+            def observed(e: Evidence, n: int, total: int) -> None:
+                self.evidence[e.candidate_key] = e
+                self.store.record_preflight(scan_id, e)
+                self.emit(Progress("preflight", n, total, e.code, evidence=e))
+
+            self.evidence = await self.preflight.run(shortlist, profile, observed)
+            for e in self.evidence.values():
+                self.store.record_preflight(scan_id, e)
         active: tuple[int, Candidate] | None = None
         try:
-            for index, (position, candidate) in enumerate(pending):
-                if attempts >= profile.max_tests:
+            index = 0
+            while pending:
+                if (
+                    attempts >= profile.max_tests
+                    or time.monotonic() - session_started >= profile.session_budget
+                ):
                     break
+                candidate = adaptive_order(
+                    [c for _, c in pending],
+                    profile,
+                    self.store.history(profile.context),
+                    self.evidence,
+                    attempted,
+                    limit=1,
+                )[0]
+                position = next(pos for pos, c in pending if c == candidate)
+                pending.remove((position, candidate))
+                attempted.append(candidate)
+                index += 1
                 if self.owned:
                     await self._disconnect(self.owned)
                 for retry in range(profile.retries + 1):
                     if attempts >= profile.max_tests:
                         break
                     active = (position, candidate)
-                    result = await self._attempt(candidate, profile)
+                    effective = profile
+                    history = [
+                        r
+                        for r in rank_results(self.store.history(profile.context))
+                        if r.candidate.key == candidate.key and r.verified
+                    ]
+                    if profile.strategy == "turbo" and history and history[0].verified:
+                        prior = history[0].verified.connect_s
+                        if prior is not None:
+                            effective = replace(
+                                profile, timeout=min(profile.timeout, max(3, prior * 2 + 3))
+                            )
+                    attempt_started = time.monotonic()
+                    result = await self._attempt(candidate, effective)
+                    durations.append(time.monotonic() - attempt_started)
+                    self.candidate_states[candidate.key] = result.state_label
                     attempts += 1
                     again = (
                         result.outcome == Outcome.FAILED
@@ -296,7 +424,28 @@ class Controller:
                         complete=not again and result.outcome != Outcome.UNKNOWN,
                     )
                     active = None
-                    self.emit(Progress("result", index + 1, len(pending), result.detail, result))
+                    eta = (
+                        (
+                            (sum(durations) / len(durations) + profile.interval)
+                            * min(len(pending), profile.max_tests - attempts)
+                        )
+                        if len(durations) >= 3
+                        else None
+                    )
+                    self.emit(
+                        Progress(
+                            "VPN verified"
+                            if result.outcome == Outcome.SUCCESS
+                            else "timed out"
+                            if "timeout" in result.code
+                            else "failed",
+                            index,
+                            index + len(pending),
+                            result.detail,
+                            result,
+                            eta_s=eta,
+                        )
+                    )
                     if result.outcome == Outcome.UNKNOWN:
                         self.store.set_state(scan_id, "paused")
                         return
@@ -308,11 +457,12 @@ class Controller:
                     if self.owned:
                         await self._disconnect(self.owned)
                     await asyncio.sleep(profile.interval * (retry + 1))
-                if index + 1 < len(pending) and attempts < profile.max_tests:
+                if pending and attempts < profile.max_tests:
                     await asyncio.sleep(profile.interval)
             self.store.set_state(scan_id, "limited" if self.store.pending(scan_id) else "complete")
         except asyncio.CancelledError:
             if active:
+                self.candidate_states[active[1].key] = "cancelled"
                 self.store.record(
                     Result(
                         active[1],

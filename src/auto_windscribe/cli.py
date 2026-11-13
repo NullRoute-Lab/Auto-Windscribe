@@ -32,7 +32,7 @@ def parser() -> argparse.ArgumentParser:
         ("offline", "Cache only: no native CLI or network access"),
         ("dry-run", "Show planned actions; no native CLI or probes"),
         ("demo", "Isolated synthetic offline demo; no real VPN actions"),
-        ("live", "Explicitly confirm a live action (also requires config consent)"),
+        ("live", "Confirm a bounded live session; no persistent configuration required"),
         ("json", "Machine-readable JSON output"),
     ):
         common.add_argument(
@@ -42,7 +42,13 @@ def parser() -> argparse.ArgumentParser:
         prog="auto-windscribe",
         parents=[common],
         description="Unofficial Linux controller for native Windscribe. "
-        "Live actions are locked by default. Run without a subcommand to open the TUI.",
+        "Live actions require deliberate session confirmation. Run without a subcommand "
+        "to open the TUI.",
+    )
+    root.add_argument(
+        "--auto-scan",
+        action="store_true",
+        help="Offer Turbo on launch; --live explicitly consents to start",
     )
     root.add_argument("--version", action="version", version=__version__)
     sub = root.add_subparsers(dest="command")
@@ -67,6 +73,10 @@ def parser() -> argparse.ArgumentParser:
     scan.add_argument("--location", action="append")
     scan.add_argument("--protocol", action="append")
     scan.add_argument("--port", type=int, action="append")
+    scan.add_argument("--preflight-concurrency", type=int)
+    scan.add_argument("--preflight-budget", type=int)
+    scan.add_argument("--preflight-timeout", type=float)
+    scan.add_argument("--session-budget", type=float)
     scan.add_argument("--resume", type=int, metavar="SCAN_ID")
     results = sub.add_parser(
         "results", parents=[common], help="History, rankings and resumable scans"
@@ -124,6 +134,10 @@ def scan_profile(args: argparse.Namespace, services: Services) -> Profile:
         field: getattr(args, arg)
         for arg, field in (
             ("max_tests", "max_tests"),
+            ("preflight_concurrency", "preflight_concurrency"),
+            ("preflight_budget", "preflight_budget"),
+            ("preflight_timeout", "preflight_timeout"),
+            ("session_budget", "session_budget"),
             ("mode", "mode"),
             ("country", "countries"),
             ("city", "cities"),
@@ -137,6 +151,19 @@ def scan_profile(args: argparse.Namespace, services: Services) -> Profile:
     return replace(profile, **changes).validate()
 
 
+def confirm_session(args: argparse.Namespace, services: Services, message: str) -> None:
+    gate = services.controller.gate
+    if (
+        not gate.confirmed
+        and not services.offline
+        and sys.stdin.isatty()
+        and not getattr(args, "json", False)
+    ):
+        console.print(message, markup=False)
+        gate.confirmed = input("Continue? [y/N] ").strip().lower() in ("y", "yes")
+    gate.require_live()
+
+
 async def dispatch(args: argparse.Namespace, services: Services) -> int:
     machine = getattr(args, "json", False)
     dry = getattr(args, "dry_run", False)
@@ -145,7 +172,11 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
     if cmd is None:
         from .tui import WindscribeApp
 
-        app = WindscribeApp(services, dry_run=dry)
+        app = WindscribeApp(
+            services,
+            dry_run=dry,
+            auto_start=getattr(args, "auto_scan", False) and getattr(args, "live", False),
+        )
         with cancellation_signals(app.request_exit):
             await app.run_async()
         return 0
@@ -178,7 +209,8 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
         checks: dict[str, Any] = {
             "app_version": __version__,
             "mode": "offline" if services.offline else "read-only",
-            "live_enabled": services.config.live_enabled,
+            "consent": "session confirmation or --live",
+            "preflight": "unavailable: native CLI does not expose trusted endpoint mapping",
             "status": asdict(status),
             "firewall_policy": "preserved",
             "advanced_settings": "Not exposed by CLI; see docs/CAPABILITIES.md",
@@ -217,13 +249,19 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
                 profile = Profile.from_dict(
                     {**json.loads(args.file.read_text()), "name": args.name}
                 )
-                if not dry:
+                if not dry and (not services.offline or services.demo):
                     profiles.save(profile)
                 output(asdict(profile), machine)
             elif args.action == "delete":
-                if not dry:
+                if not dry and (not services.offline or services.demo):
                     profiles.delete(args.name)
-                output({"profile": args.name, "deleted": not dry}, machine)
+                output(
+                    {
+                        "profile": args.name,
+                        "deleted": not dry and (not services.offline or services.demo),
+                    },
+                    machine,
+                )
     elif cmd == "results":
         if args.scans:
             output(services.store.scans(), machine)
@@ -252,11 +290,12 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
         if dry:
             output({"action": "disconnect", "executed": False}, machine)
         else:
+            confirm_session(
+                args, services, "Disconnect the system VPN? Internet may be interrupted."
+            )
             await services.controller.disconnect()
             output({"state": "disconnected"}, machine)
     elif cmd in ("connect", "scan"):
-        if not dry:
-            services.controller.gate.require_live()  # Fail before catalog/CLI work.
         catalog = await services.catalog()
         if cmd == "connect":
             locations = [
@@ -275,6 +314,16 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
                     machine,
                 )
             else:
+                confirm_session(
+                    args,
+                    services,
+                    f"Connect {candidate.key} and verify HTTPS?"
+                    + (
+                        " Replace the current tunnel."
+                        if args.interrupt
+                        else " Existing tunnel is protected."
+                    ),
+                )
                 result = await services.controller.connect(
                     candidate, services.profile(args.profile), args.interrupt
                 )
@@ -306,6 +355,14 @@ async def dispatch(args: argparse.Namespace, services: Services) -> int:
                     machine,
                 )
             else:
+                confirm_session(
+                    args,
+                    services,
+                    f"Start {profile.strategy}: up to {profile.max_tests} VPN attempts, "
+                    f"{profile.preflight_budget} transport probes, "
+                    f"{profile.session_budget:g}s session? "
+                    "Internet may be interrupted; existing tunnel is protected.",
+                )
                 if scan_id is None:
                     scan_id = services.store.new_scan(queue, profile)
                 if not machine:
@@ -348,7 +405,10 @@ def main(argv: list[str] | None = None) -> int:
                 else build_services(
                     Paths.discover(),
                     offline=getattr(args, "offline", False) or getattr(args, "dry_run", False),
-                    confirmed=getattr(args, "live", False) or args.command is None,
+                    confirmed=getattr(args, "live", False),
+                    readonly=args.command
+                    in ("status", "doctor", "locations", "protocols", "results")
+                    or (args.command == "profiles" and args.action in ("list", "show")),
                 )
             )
             try:

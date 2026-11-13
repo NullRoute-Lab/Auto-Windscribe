@@ -12,6 +12,7 @@ flowchart LR
     Service --> Controller[Sequential async controller]
     Controller --> Gate[Live consent + operation lock]
     Gate --> CLI[Official windscribe-cli]
+    Controller --> Preflight[Bounded transport scheduler / trusted inventory]
     Controller --> Probe[Tunnel-bound probes]
     Controller --> Store[SQLite observations + persistent queue]
     Store --> Ranking[Context-specific ranking]
@@ -23,9 +24,11 @@ flowchart LR
 - `parsing.py`: native 2.25.8 status, help, port, catalog and Linux ping parsers.
 - `process.py`: async argv subprocess execution with deadlines, bounded output and child cleanup.
 - `windscribe.py`: narrow read and connection interface; no login, firewall, settings or helper APIs.
+- `preflight.py`: bounded TCP transport scheduler, injected inventory, separate evidence; native
+  inventory is unavailable without a safe official address export.
 - `engine.py`: serialized operations, polling, ownership checks, cancellation and durable results.
 - `probes.py`: read-only route/device verification followed by explicitly authorized bound traffic.
-- `storage.py`: XDG paths, private atomic JSON and SQLite schema version 1.
+- `storage.py`: XDG paths, private atomic JSON and SQLite schema version 2.
 - `ranking.py`: fuzzy search, filters, supported combinations, cooldown and explainable ranking.
 - `tui.py` / `cli.py`: confirmation, worker-driven views and machine-readable command output.
 - `demo.py`: synthetic adapters composed only in an isolated temporary demo environment.
@@ -62,7 +65,7 @@ was a reason to avoid derivative source reuse. See THIRD_PARTY_NOTICES.md.
 ## Connection state machine
 
 1. Acquire a nonblocking Linux `flock` across controller instances/processes.
-2. Require saved live permission plus explicit action consent; the offline override wins.
+2. Require one explicit session consent; the offline override wins.
 3. Confirm disconnected and signed in. Existing connections are protected.
 4. Validate candidate protocol/port against discovered capabilities, then dispatch `connect -n`.
 5. Poll exact native state. Exit zero means only that a request was accepted.
@@ -78,16 +81,17 @@ port is not distinguishable. The CLI offers no exclusive lease or connection gen
 `flock` prevents Auto-Windscribe conflicts, not GUI actions. Users must leave the GUI idle during
 scans. This limitation cannot honestly be solved by guessing or reading private configuration.
 
-Connection timeout includes CLI dispatch and polling. CLI commands have a 10-second deadline;
+Preparation, dispatch, establishment, route validation and HTTPS have separate deadlines.
+See [Turbo failure analysis and timing semantics](TURBO.md). CLI commands have a 10-second deadline;
 output is capped at 1 MiB per stream. Cancellation terminates only child CLI/probe processes started
 by this application, never Windscribe or the helper. A `-n` request already delivered can still
 complete. There is deliberately no disconnect in a shutdown `finally` block.
 
 Retries are only for known failures, at most two per candidate, with increasing backoff. Every
-recorded attempt, including interrupted work, consumes the persisted total budget. Unknown state
+recorded attempt, including interrupted work, is persisted; budgets apply per confirmed session. Unknown state
 or controller conflict pauses without automatic recovery. On resume, completed queue entries are
-skipped, remaining entries are validated against current capabilities, and the saved profile/budget
-is reused. A hard process crash leaves the in-flight entry pending; its uncommitted attempt cannot
+skipped, remaining entries are validated against current capabilities, and the saved profile
+is reused with a fresh bounded session budget. A hard process crash leaves the in-flight entry pending; its uncommitted attempt cannot
 be counted precisely. Resume is explicit and starts disconnected.
 
 ## Measurements and score
@@ -118,7 +122,7 @@ score = 60 × (s + 1)/(n + 2)
 
 Unknown quality terms contribute zero; they do not become invented measurements. Raw historical
 success rate is displayed separately. Latency/loss/connection-time sorts put missing measurements
-last. Candidate selection reserves room for exploration, prioritizes successful history, excludes
+last. Candidate selection reserves room for exploration, prioritizes successful history, deprioritizes
 recent known failures in the same context, and always caps attempts. Restrictive profiles change
 protocol priority only, not Windscribe's censorship settings.
 
@@ -138,3 +142,8 @@ help is authoritative and capability discovery is repeated at runtime.
 - [Official CLI IPC commander](https://github.com/Windscribe/Desktop-App/blob/master/src/windscribe-cli/backendcommander.cpp)
 - [Official protocol labels](https://github.com/Windscribe/Desktop-App/blob/master/src/client/client-common/types/protocol.cpp)
 - [Textual workers](https://textual.textualize.io/guide/workers/) and [Pilot testing](https://textual.textualize.io/guide/testing/)
+
+## v0.2 details
+
+[TURBO.md](TURBO.md) documents endpoint trust, adaptive selection weights, phase errors,
+proxy/namespace research, budgets, schema migration and measured offline performance.

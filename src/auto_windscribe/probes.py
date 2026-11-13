@@ -1,7 +1,9 @@
 """Conservative Linux probes bound to a verified tunnel device, disabled by the gate."""
 
+import asyncio
 import json
 import re
+import time
 from typing import Protocol
 
 from .errors import AppError, ParseError
@@ -43,7 +45,17 @@ class TunnelProbe:
 
     async def measure(self, profile: Profile) -> Metrics:
         self.gate.require_live()
-        dev = await self._interface()
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(profile.validation_timeout):
+                dev = await self._interface()
+        except TimeoutError as exc:
+            raise AppError(
+                "validation_timeout",
+                "Tunnel route validation deadline expired.",
+                {"validation": time.monotonic() - started},
+            ) from exc
+        validation_s = time.monotonic() - started
         # Direct HTTPS IP avoids a separate DNS lookup. Proxies and curlrc are disabled.
         base = [
             "/usr/bin/curl",
@@ -63,18 +75,32 @@ class TunnelProbe:
             "--output",
             "/dev/null",
         ]
-        https = await self.runner.run(
-            [
-                *base,
-                "--max-filesize",
-                "65536",
-                "--write-out",
-                "%{http_code}",
-                "https://1.1.1.1/cdn-cgi/trace",
-            ],
-            timeout=12,
-        )
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(profile.https_timeout):
+                https = await self.runner.run(
+                    [
+                        *base,
+                        "--max-filesize",
+                        "65536",
+                        "--write-out",
+                        "%{http_code}",
+                        "https://1.1.1.1/cdn-cgi/trace",
+                    ],
+                    timeout=profile.https_timeout,
+                )
+        except (TimeoutError, AppError) as exc:
+            raise AppError(
+                "https_timeout"
+                if isinstance(exc, TimeoutError) or getattr(exc, "code", "") == "command_timeout"
+                else "https_command_error",
+                "Connected tunnel; HTTPS verification did not complete. "
+                "This is not a VPN handshake diagnostic.",
+                {"validation": validation_s, "https": time.monotonic() - started},
+            ) from exc
         metrics = Metrics(https_ok=https.returncode == 0 and https.stdout.strip() == "200")
+        metrics.timings = {"validation": validation_s, "https": time.monotonic() - started}
+        started = time.monotonic()
         if not metrics.https_ok:
             metrics.note = "Tunnel-bound HTTPS failed; endpoint blocking is also possible."
         if profile.ping_count:
@@ -129,4 +155,5 @@ class TunnelProbe:
                 pass
             if metrics.download_mbps is None:
                 metrics.note += " Optional bounded download unavailable."
+        metrics.timings["quality"] = time.monotonic() - started
         return metrics

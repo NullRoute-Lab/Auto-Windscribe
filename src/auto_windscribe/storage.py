@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -57,9 +58,8 @@ def atomic_json(path: Path, data: Any) -> None:
 
 @dataclass
 class Config:
-    live_enabled: bool = False
-    auto_scan: bool = False
-    default_profile: str = "default"
+    auto_scan: bool = True
+    default_profile: str = "turbo"
     catalog_ttl: int = 86400
 
     @classmethod
@@ -68,8 +68,10 @@ class Config:
         if not path.exists():
             return cls()
         try:
-            conf = cls(**json.loads(path.read_text()))
-            if type(conf.live_enabled) is not bool or type(conf.auto_scan) is not bool:
+            data = json.loads(path.read_text())
+            data.pop("live_enabled", None)  # v0.1 migration: never a permission prerequisite.
+            conf = cls(**data)
+            if type(conf.auto_scan) is not bool:
                 raise ValueError("Consent flags must be boolean")
             if (
                 type(conf.catalog_ttl) is not int
@@ -80,12 +82,13 @@ class Config:
             return conf
         except (ValueError, TypeError, OSError) as exc:
             raise AppError(
-                "config_invalid", "Invalid config.json; live access remains locked."
+                "config_invalid", "Invalid config.json; correct the application settings."
             ) from exc
 
 
 class Profiles:
-    def __init__(self, paths: Paths) -> None:
+    def __init__(self, paths: Paths, readonly: bool = False) -> None:
+        self.readonly = readonly
         self.path = paths.config / "profiles.json"
 
     def all(self) -> dict[str, Profile]:
@@ -112,12 +115,16 @@ class Profiles:
         return profiles[name]
 
     def save(self, profile: Profile) -> None:
+        if self.readonly:
+            raise AppError("offline", "Offline profiles cannot be changed.")
         profile.validate()
         profiles = self.all()
         profiles[profile.name] = profile
         atomic_json(self.path, {name: asdict(p) for name, p in profiles.items()})
 
     def delete(self, name: str) -> None:
+        if self.readonly:
+            raise AppError("offline", "Offline profiles cannot be changed.")
         profiles = self.all()
         profiles.pop(name, None)
         atomic_json(
@@ -163,16 +170,59 @@ class Catalog:
 
 
 class Store:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, readonly: bool = False) -> None:
+        if readonly:
+            self.conn = sqlite3.connect(":memory:")
+            if path.exists():
+                # mode=ro alone can update WAL shared-memory read marks. Snapshot only
+                # our app DB/WAL into an ephemeral directory before SQLite opens them.
+                with tempfile.TemporaryDirectory(prefix="auto-windscribe-read-") as directory:
+                    target = Path(directory) / "history.sqlite3"
+                    sources = [path, Path(str(path) + "-wal")]
+                    for _attempt in range(3):
+                        before = [
+                            (p.stat().st_size, p.stat().st_mtime_ns) if p.exists() else None
+                            for p in sources
+                        ]
+                        for source, stamp in zip(sources, before, strict=True):
+                            dest = target if source == path else Path(str(target) + "-wal")
+                            if stamp is not None:
+                                if stamp[0] > 512 * 1024 * 1024:
+                                    raise AppError(
+                                        "history_large", "Offline snapshot exceeds 512 MiB."
+                                    )
+                                shutil.copyfile(source, dest)
+                            else:
+                                dest.unlink(missing_ok=True)
+                        after = [
+                            (p.stat().st_size, p.stat().st_mtime_ns) if p.exists() else None
+                            for p in sources
+                        ]
+                        if before == after:
+                            break
+                    else:
+                        raise AppError(
+                            "history_busy", "History changed while taking offline snapshot."
+                        )
+                    source_db = sqlite3.connect(target)
+                    try:
+                        source_db.backup(self.conn)
+                    finally:
+                        source_db.close()
+            self._schema()
+            return
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         os.close(fd)
         self.conn = sqlite3.connect(path, timeout=5)
+        self._schema()
+
+    def _schema(self) -> None:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             self.conn.close()
             raise AppError("schema_newer", "Database was created by a newer application.")
         self.conn.executescript("""
@@ -191,7 +241,11 @@ class Store:
                 created REAL NOT NULL, outcome TEXT NOT NULL, payload TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS results_context ON results(context, candidate_key, created);
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS preflight (
+                scan_id INTEGER NOT NULL REFERENCES scans(id), candidate_key TEXT NOT NULL,
+                payload TEXT NOT NULL, PRIMARY KEY(scan_id, candidate_key)
+            );
+            PRAGMA user_version=2;
         """)
 
     def close(self) -> None:
@@ -271,5 +325,20 @@ class Store:
             dict(row)
             for row in self.conn.execute(
                 "SELECT id,created,state,attempts FROM scans ORDER BY id DESC LIMIT 30"
+            )
+        ]
+
+    def record_preflight(self, scan_id: int, evidence: Any) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO preflight VALUES(?,?,?)",
+                (scan_id, evidence.candidate_key, encode(evidence)),
+            )
+
+    def preflights(self, scan_id: int) -> list[dict[str, Any]]:
+        return [
+            json.loads(row[0])
+            for row in self.conn.execute(
+                "SELECT payload FROM preflight WHERE scan_id=?", (scan_id,)
             )
         ]

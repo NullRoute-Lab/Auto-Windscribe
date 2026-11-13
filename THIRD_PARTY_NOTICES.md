@@ -32,3 +32,9 @@ implementation. The durable comparison is in docs/ARCHITECTURE.md.
 - Existing Linux `ip`, `ping` and `curl` tools are optional runtime probe dependencies, not bundled.
 
 The lockfile records exact Python dependency versions. Dependency code is not vendored in Git.
+
+The v0.2 design also consulted public Windscribe Desktop-App and wsnet source for endpoint
+inventory/port-map semantics and official Windscribe proxy documentation. No source code,
+credentials, catalogs, node addresses or protocol presets from those projects are bundled.
+Pinned research references are in docs/TURBO.md. Linux manual pages informed the future namespace
+analysis; no privileged namespace implementation is included.

@@ -18,7 +18,7 @@ CLI = "/usr/bin/windscribe-cli"
 def enabled_gate(monkeypatch):
     # Only fake Runner instances are passed to native adapters in these tests.
     monkeypatch.delenv("AUTO_WINDSCRIBE_OFFLINE")
-    return SafetyGate(True, True)
+    return SafetyGate(confirmed=True)
 
 
 async def test_cli_nickname_argv_and_capability_check(monkeypatch, candidate):
@@ -54,7 +54,7 @@ async def test_cli_never_leaks_stderr():
 
 async def test_locked_adapter_never_dispatches(candidate):
     runner = ScriptRunner([])
-    cli = WindscribeCLI(runner, SafetyGate(True, True), CLI)
+    cli = WindscribeCLI(runner, SafetyGate(confirmed=True), CLI)
     with pytest.raises(SafetyError):
         await cli.connect(candidate)
     with pytest.raises(SafetyError):
@@ -62,11 +62,11 @@ async def test_locked_adapter_never_dispatches(candidate):
     assert not runner.calls
 
 
-@pytest.mark.parametrize("enabled,confirmed", [(False, False), (True, False), (False, True)])
-def test_both_permissions_required(monkeypatch, enabled, confirmed):
+def test_session_consent_is_sufficient_without_persistent_switch(monkeypatch):
     monkeypatch.delenv("AUTO_WINDSCRIBE_OFFLINE")
     with pytest.raises(SafetyError):
-        SafetyGate(enabled, confirmed).require_live()
+        SafetyGate().require_live()
+    SafetyGate(confirmed=True).require_live()
 
 
 def test_two_process_lock_objects_conflict(paths):
@@ -139,7 +139,7 @@ async def test_process_output_limit(monkeypatch):
 async def test_probe_guard_precedes_even_route_reads(profile):
     runner = ScriptRunner([])
     with pytest.raises(SafetyError):
-        await TunnelProbe(runner, SafetyGate(True, True)).measure(profile)
+        await TunnelProbe(runner, SafetyGate(confirmed=True)).measure(profile)
     assert not runner.calls
 
 
@@ -245,3 +245,34 @@ async def test_ambiguous_nickname_never_dispatches(monkeypatch, candidate):
     with pytest.raises(SafetyError, match="unavailable or ambiguous"):
         await WindscribeCLI(runner, enabled_gate(monkeypatch), CLI).connect(candidate)
     assert all(args[1] != "connect" for args in runner.calls)
+
+
+@pytest.mark.parametrize("phase", ["validation", "https"])
+async def test_probe_phase_deadlines_are_independent(phase, profile):
+    from auto_windscribe.demo import DemoGate
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    profile.validation_timeout = profile.https_timeout = 0.01
+    runner = AsyncMock(run=AsyncMock(side_effect=slow))
+    probe = TunnelProbe(runner, DemoGate())
+    probe._interface = (
+        AsyncMock(side_effect=slow) if phase == "validation" else AsyncMock(return_value="tun0")
+    )
+    with pytest.raises(AppError) as exc:
+        await probe.measure(profile)
+    assert exc.value.code == phase + "_timeout"
+    assert 0.009 <= exc.value.timings[phase] < 0.2
+    assert runner.run.await_count == (0 if phase == "validation" else 1)
+
+
+async def test_https_execution_failure_not_mislabeled_timeout(profile):
+    from auto_windscribe.demo import DemoGate
+
+    runner = AsyncMock(run=AsyncMock(side_effect=AppError("executable_missing", "Unavailable")))
+    probe = TunnelProbe(runner, DemoGate())
+    probe._interface = AsyncMock(return_value="tun0")
+    with pytest.raises(AppError) as exc:
+        await probe.measure(profile)
+    assert exc.value.code == "https_command_error"

@@ -58,3 +58,12 @@ names also receive a country label. Virtual region names are not converted into 
 [Official CLI guide](https://windscribe.com/knowledge-base/articles/how-to-use-windscribe-on-linux-cli-and-headless),
 [official headless configuration reference](https://github.com/Windscribe/Desktop-App/wiki/Linux-CLI-configuration-file-reference),
 and [official CLI formatter](https://github.com/Windscribe/Desktop-App/blob/master/src/windscribe-cli/strings.cpp).
+
+## Using advanced settings with Turbo
+
+The native CLI and GUI control the same connection manager. Keep the GUI idle during a scan.
+To compare Anti-Censorship/AmneziaWG/SNI/routing/TLS changes, pause, inspect native state, change
+preferences yourself in the official application, and save a new non-sensitive `settings_label`
+in the Auto-Windscribe profile. Unknown values stay unknown; a label is your description, not a
+claim that this controller read or applied the setting. Preflight cannot infer the effective
+TLS SNI or alternate routing; these methods remain unavailable unless officially exposed.

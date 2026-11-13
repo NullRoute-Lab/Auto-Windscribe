@@ -1,0 +1,36 @@
+{
+  "python": "3.12.12",
+  "platform": "Linux x86_64",
+  "experiment": "32 synthetic endpoints, 100 ms delay each, three runs, 100 starts/s cap",
+  "network_operations": 0,
+  "results": {
+    "1": {
+      "seconds": [
+        3.206738,
+        3.206942,
+        3.206851
+      ],
+      "median_s": 3.206851,
+      "peak_concurrency": [
+        1,
+        1,
+        1
+      ]
+    },
+    "16": {
+      "seconds": [
+        0.414339,
+        0.415057,
+        0.414847
+      ],
+      "median_s": 0.414847,
+      "peak_concurrency": [
+        10,
+        10,
+        10
+      ]
+    }
+  },
+  "median_speedup": 7.73,
+  "scope": "Sequential vs bounded preflight scheduling only; no real VPN speed claim."
+}

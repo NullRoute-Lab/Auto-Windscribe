@@ -10,21 +10,18 @@ from pathlib import Path
 from .errors import SafetyError
 
 
-@dataclass(frozen=True)
+@dataclass
 class SafetyGate:
-    enabled: bool = False
     confirmed: bool = False
     offline: bool = False
 
     def require_live(self) -> None:
         if self.offline or os.environ.get("AUTO_WINDSCRIBE_OFFLINE") == "1":
             raise SafetyError("offline_guard", "Offline mode forbids VPN operations and probes.")
-        if not self.enabled or not self.confirmed:
+        if not self.confirmed:
             raise SafetyError(
                 "authorization_required",
-                "Live operations are locked. Enable live "
-                "access in app config only after authorization, then explicitly "
-                "confirm the action (--live in the CLI).",
+                "Confirm this session in the terminal, or pass --live for scripting.",
             )
 
 

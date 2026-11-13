@@ -63,6 +63,7 @@ def demo_services(paths: Paths) -> Services:
     vpn, store, gate = DemoVPN(), Store(paths.data / "history.sqlite3"), DemoGate(offline=True)
     profiles = Profiles(paths)
     profiles.save(replace(Profile(), settle=0))
+    profiles.save(replace(Profile(name="turbo"), settle=0))
     return Services(
         paths,
         Config(),
