@@ -4,8 +4,8 @@ A Linux terminal interface and connection analyzer for the **official Windscribe
 Auto-Windscribe is an unofficial controller, not a VPN implementation and not a Windscribe product.
 It uses the existing `/usr/bin/windscribe-cli`; authentication and tunnel ownership stay with Windscribe.
 
-**Release status:** implemented and tested offline. Real VPN connections have not been tested in this
-release's development session. Live operations are locked by default. See
+**Release status:** implemented and tested offline. Successful live tunnel operation has not yet
+been validated. Live operations are locked by default. See
 [the authorization boundary](docs/TEST_AUTHORIZATION.md).
 
 [فارسی](README.fa.md) · [Architecture](docs/ARCHITECTURE.md) · [Capabilities](docs/CAPABILITIES.md)

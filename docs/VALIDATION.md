@@ -2,6 +2,10 @@
 
 Date: November 13, 2026. Scope: implementation and offline validation only.
 
+This is the initial development record, before the separately authorized live
+test phase. Current authorization status is in TEST_AUTHORIZATION.md; private
+runtime observations are not published in this record.
+
 | Check | Result |
 | --- | --- |
 | Python 3.12.12 | 115 tests passed |

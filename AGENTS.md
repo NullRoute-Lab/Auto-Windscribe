@@ -2,6 +2,11 @@
 
 ## Mandatory authorization boundary
 
+The user authorized one bounded post-publication connection test. That permission
+has now been consumed. No further live operations are authorized. Read
+docs/TEST_AUTHORIZATION.md before any future live action; another attempt requires
+new explicit permission. All protections below remain.
+
 This development phase permits **offline, mocked, and dry-run tests only**.
 Do not execute Windscribe connect/disconnect commands, network probes, ping,
 speed tests, or live scans. Do not change firewall, DNS, routes, interfaces,
